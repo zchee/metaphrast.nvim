@@ -32,7 +32,7 @@ local function close_active_win()
   return true
 end
 
----Return true when Neovim is currently in visual or select mode.
+---Reports whether the currently in visual or select mode.
 ---@param mode string|nil Current mode from vim.fn.mode().
 ---@return boolean
 local function is_visual_or_select_mode(mode)
