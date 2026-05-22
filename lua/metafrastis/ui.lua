@@ -243,7 +243,21 @@ function M.show_window(text, meta, opts)
     end
     if not win_opts.height then
       local editor_h = vim.o.lines - vim.o.cmdheight - 2
-      win_opts.height = math.min(#lines, math.floor(editor_h * 0.6))
+      local wrap_enabled = not (win_opts.wo and win_opts.wo.wrap == false)
+      local inner_w = math.max(1, win_opts.width)
+      local visual_lines = 0
+      for _, line in ipairs(lines) do
+        local w = display_width(line)
+        if wrap_enabled and w > inner_w then
+          visual_lines = visual_lines + math.ceil(w / inner_w)
+        else
+          visual_lines = visual_lines + 1
+        end
+      end
+      if visual_lines == 0 then
+        visual_lines = 1
+      end
+      win_opts.height = math.min(visual_lines, math.floor(editor_h * 0.6))
     end
 
     local win = snacks.win(win_opts)

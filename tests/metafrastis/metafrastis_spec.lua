@@ -1290,4 +1290,71 @@ describe("ui helper", function()
     package.loaded["snacks"] = nil
     ui._reset_for_tests()
   end)
+
+  it("sizes window height for wrapped long lines", function()
+    metafrastis._reset_for_tests()
+    metafrastis.setup({ provider = "echo" })
+
+    local win_opts
+    package.loaded["snacks"] = {
+      notify = {
+        info = function() end,
+        warn = function() end,
+        notify = function() end,
+      },
+      win = function(opts)
+        win_opts = opts
+        return { show = function() end }
+      end,
+    }
+    local ui = require("metafrastis.ui")
+    ui._reset_for_tests()
+    ui.set_defaults({})
+
+    local original_lines = vim.o.lines
+    vim.o.lines = 60
+    local long = string.rep("a", 400)
+    ui.show_window(long, nil, { win = { width = 40 } })
+    vim.o.lines = original_lines
+
+    assert.truthy(win_opts)
+    assert.equals(40, win_opts.width)
+    assert.is_true(
+      win_opts.height >= 10,
+      "expected height >= 10 for a 400-char line wrapped at 40, got " .. tostring(win_opts.height)
+    )
+
+    package.loaded["snacks"] = nil
+    ui._reset_for_tests()
+  end)
+
+  it("does not multiply height when wrap is disabled", function()
+    metafrastis._reset_for_tests()
+    metafrastis.setup({ provider = "echo" })
+
+    local win_opts
+    package.loaded["snacks"] = {
+      notify = {
+        info = function() end,
+        warn = function() end,
+        notify = function() end,
+      },
+      win = function(opts)
+        win_opts = opts
+        return { show = function() end }
+      end,
+    }
+    local ui = require("metafrastis.ui")
+    ui._reset_for_tests()
+    ui.set_defaults({})
+
+    local long = string.rep("a", 400)
+    ui.show_window(long, nil, { win = { width = 40, wo = { wrap = false } } })
+
+    assert.truthy(win_opts)
+    assert.equals(1, win_opts.height)
+
+    package.loaded["snacks"] = nil
+    ui._reset_for_tests()
+  end)
 end)
