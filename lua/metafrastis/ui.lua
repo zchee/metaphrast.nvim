@@ -6,6 +6,42 @@ local snacks_cache = nil
 local autoclose_group = vim.api.nvim_create_augroup("MetafrastisSnacksWin", { clear = true })
 local default_win_opts = {}
 local active_win = nil
+local highlights_defined = false
+
+-- Modern teal/cyan palette for the translation popup. Border and title use a
+-- bright teal; the footer hint uses a muted gray so it recedes. All groups are
+-- registered with `default = true`, so any colorscheme or user override wins.
+local highlight_defs = {
+  MetafrastisWinBorder = { fg = "#2dd4bf", ctermfg = 80, default = true },
+  MetafrastisWinTitle = { fg = "#2dd4bf", ctermfg = 80, bold = true, default = true },
+  MetafrastisWinFooter = { fg = "#6b7280", ctermfg = 244, default = true },
+}
+
+-- winhighlight string for the popup window. This mirrors Snacks' default
+-- `win.wo.winhighlight` baseline (so the body, winbar, and separators keep
+-- their themed look) and substitutes only the border/title/footer groups with
+-- the metafrastis teal palette defined above.
+local win_highlight = table.concat({
+  "Normal:SnacksNormal",
+  "NormalNC:SnacksNormalNC",
+  "WinBar:SnacksWinBar",
+  "WinBarNC:SnacksWinBarNC",
+  "FloatBorder:MetafrastisWinBorder",
+  "FloatTitle:MetafrastisWinTitle",
+  "FloatFooter:MetafrastisWinFooter",
+  "WinSeparator:SnacksWinSeparator",
+}, ",")
+
+---Register the popup highlight groups once. Idempotent across calls.
+local function ensure_highlights()
+  if highlights_defined then
+    return
+  end
+  highlights_defined = true
+  for name, def in pairs(highlight_defs) do
+    vim.api.nvim_set_hl(0, name, def)
+  end
+end
 
 local function get_snacks()
   if snacks_cache ~= nil then
@@ -193,6 +229,7 @@ function M.show_window(text, meta, opts)
   local title = make_title(meta, opts)
 
   if snacks and snacks.win then
+    ensure_highlights()
     local win_opts = vim.tbl_deep_extend("force", {
       text = lines,
       title = title,
@@ -220,6 +257,7 @@ function M.show_window(text, meta, opts)
         wrap = true,
         linebreak = true,
         conceallevel = 2,
+        winhighlight = win_highlight,
       },
       bo = {
         filetype = "markdown",
@@ -298,6 +336,7 @@ function M._reset_for_tests()
   snacks_cache = nil
   default_win_opts = {}
   active_win = nil
+  highlights_defined = false
 end
 
 return M

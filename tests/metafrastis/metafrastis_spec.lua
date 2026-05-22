@@ -1211,6 +1211,42 @@ describe("ui helper", function()
     assert.equals("markdown", win_opts.bo.filetype)
   end)
 
+  it("applies the modern teal palette to the snacks.win popup", function()
+    local win_opts
+    package.loaded["snacks"] = {
+      notify = {
+        info = function() end,
+        warn = function() end,
+        notify = function() end,
+      },
+      win = function(opts)
+        win_opts = opts
+        return { show = function() end }
+      end,
+    }
+    local ui = require("metafrastis.ui")
+    ui._reset_for_tests()
+    ui.show_window("ciao", { provider = "echo" }, { target_lang = "es" })
+
+    assert.truthy(win_opts)
+    local winhl = win_opts.wo.winhighlight
+    assert.truthy(winhl, "expected wo.winhighlight to be set")
+    -- Border/title/footer routed to the metafrastis palette groups.
+    assert.truthy(winhl:find("FloatBorder:MetafrastisWinBorder", 1, true))
+    assert.truthy(winhl:find("FloatTitle:MetafrastisWinTitle", 1, true))
+    assert.truthy(winhl:find("FloatFooter:MetafrastisWinFooter", 1, true))
+    -- Snacks' body/separator baseline is preserved, not clobbered.
+    assert.truthy(winhl:find("Normal:SnacksNormal", 1, true))
+    assert.truthy(winhl:find("WinSeparator:SnacksWinSeparator", 1, true))
+
+    -- The teal highlight group is actually registered.
+    local border_hl = vim.api.nvim_get_hl(0, { name = "MetafrastisWinBorder" })
+    assert.equals(0x2dd4bf, border_hl.fg)
+
+    package.loaded["snacks"] = nil
+    ui._reset_for_tests()
+  end)
+
   it("falls back to vim.echo when snacks missing", function()
     package.loaded["snacks"] = nil
     local ui = require("metafrastis.ui")
