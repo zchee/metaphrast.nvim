@@ -214,6 +214,129 @@ describe("comment handling", function()
     assert.equals("anthropicLLM implements the adk [model.LLM] interface using the Anthropic SDK.", last_text)
   end)
 
+  it("joins a soft-wrapped comment paragraph into one coherent translation unit", function()
+    local last_text
+    registry.register("capture_multiline", {
+      translate = function(_, payload)
+        last_text = payload.text
+        return payload.text
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metafrastis.config.provider = "capture_multiline"
+    metafrastis.config.replace = true
+
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_set_current_buf(bufnr)
+    vim.bo[bufnr].commentstring = "// %s"
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+      '//   - inline: The "inline" option specifies that',
+      "//     the JSON representable content of this field type is to be promoted",
+      "//     as if they were specified in the parent struct.",
+      "//     It is the JSON equivalent of Go struct embedding.",
+    })
+
+    metafrastis.translate_range(bufnr, 0, 4, { target_lang = "ja" })
+
+    -- The provider must receive the whole paragraph as ONE line: the soft-wrap
+    -- newlines that previously fragmented translation are collapsed to spaces.
+    assert.is_nil(last_text:find("\n"), "paragraph must not contain intra-paragraph newline: " .. last_text)
+    assert.equals(
+      '- inline: The "inline" option specifies that the JSON representable content of this field '
+        .. "type is to be promoted as if they were specified in the parent struct. It is the JSON "
+        .. "equivalent of Go struct embedding.",
+      last_text
+    )
+  end)
+
+  it("lays a coherent CJK translation back into wrapped comment lines", function()
+    -- End-to-end guard for the reported regression: a soft-wrapped // block is
+    -- translated as one unit and reflowed into // lines within the source width.
+    local ja = "inlineオプションは、このフィールド型のJSON表現可能な内容を、"
+      .. "親構造体で指定されたかのように昇格させることを指定します。"
+    registry.register("canned_ja", {
+      translate = function()
+        return ja
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metafrastis.config.provider = "canned_ja"
+    metafrastis.config.replace = true
+
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_set_current_buf(bufnr)
+    vim.bo[bufnr].commentstring = "// %s"
+    local source = {
+      '//   - inline: The "inline" option specifies that',
+      "//     the JSON representable content of this field type is to be promoted",
+      "//     as if they were specified in the parent struct.",
+    }
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, source)
+
+    metafrastis.translate_range(bufnr, 0, 3, { target_lang = "ja" })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    -- Width budget = widest source content line (leader stripped).
+    local budget = 0
+    for _, l in ipairs(source) do
+      budget = math.max(budget, vim.fn.strdisplaywidth((l:gsub("^//%s*", ""))))
+    end
+    local recovered = {}
+    for _, line in ipairs(lines) do
+      assert.truthy(line:match("^// "), "every output line keeps the // leader: " .. line)
+      assert.is_true(
+        vim.fn.strdisplaywidth(line) <= budget + vim.fn.strdisplaywidth("// "),
+        "line stays within the comment width budget: " .. line
+      )
+      recovered[#recovered + 1] = (line:gsub("^//%s*", ""))
+    end
+    -- Reassembling the stripped output recovers the full coherent translation.
+    assert.equals(ja, table.concat(recovered, ""))
+  end)
+
+  it("keeps distinct paragraphs separated when a blank comment line divides them", function()
+    local last_text
+    registry.register("capture_paras", {
+      translate = function(_, payload)
+        last_text = payload.text
+        return payload.text
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metafrastis.config.provider = "capture_paras"
+    metafrastis.config.replace = true
+
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_set_current_buf(bufnr)
+    vim.bo[bufnr].commentstring = "// %s"
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+      "// First paragraph that wraps",
+      "// across two lines.",
+      "//",
+      "// Second paragraph here.",
+    })
+
+    metafrastis.translate_range(bufnr, 0, 4, { target_lang = "ja" })
+
+    -- Two paragraphs => exactly one separating newline; each paragraph joined.
+    assert.equals("First paragraph that wraps across two lines.\nSecond paragraph here.", last_text)
+    -- The blank comment line is preserved in the replaced buffer.
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local blank_kept = false
+    for _, line in ipairs(lines) do
+      if line:match("^//%s*$") then
+        blank_kept = true
+      end
+    end
+    assert.is_true(blank_kept, "blank comment line should be preserved: " .. vim.inspect(lines))
+  end)
+
   it("strips block comments before translation and reapplies with suffix", function()
     local last_text
     registry.register("capture_block", {
@@ -654,9 +777,15 @@ describe("visual selection translation", function()
     -- Translated payload must not contain the comment leader.
     assert.is_nil(result:find("//"), "translated text should not contain comment leader: " .. result)
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    assert.truthy(lines[1]:match("^// "), "first line should keep // prefix: " .. lines[1])
-    assert.truthy(lines[2]:match("^// "), "second line should keep // prefix: " .. lines[2])
-    assert.equals("code()", lines[3])
+    -- The non-selected code line is preserved as the final buffer line.
+    assert.equals("code()", lines[#lines])
+    -- Every reapplied comment line keeps the // leader; the soft-wrapped
+    -- comment is translated as one coherent paragraph (it may re-wrap across a
+    -- different number of lines than the source).
+    for i = 1, #lines - 1 do
+      assert.truthy(lines[i]:match("^// "), "comment line should keep // prefix: " .. lines[i])
+    end
+    assert.is_true(#lines >= 2, "selection should produce at least one comment line: " .. vim.inspect(lines))
   end)
 
   it("preserves indentation when reapplying comment leader on visual selection", function()

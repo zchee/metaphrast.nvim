@@ -3,6 +3,7 @@ local cfg = require("metafrastis.config")
 local comment = require("metafrastis.comment")
 local http_builder = require("metafrastis.http")
 local registry = require("metafrastis.providers")
+local textflow = require("metafrastis.textflow")
 local ui = require("metafrastis.ui")
 local util = require("metafrastis.util")
 
@@ -114,6 +115,97 @@ local function perform_translate(http_fn, text, opts)
   return translated, { cached = false, provider = provider_name, icon = provider_icon }
 end
 
+---Build the coherent translation input for a comment selection.
+---
+---Returns the text to send to the provider (paragraphs joined by newlines, with
+---intra-paragraph soft wraps collapsed to spaces) plus a layout describing how
+---to lay the translation back out. Returns nil when the lines carry no comment
+---structure, signalling callers to use the legacy line-preserving path.
+---@param stripped string[]
+---@param info MetafrastisCommentLineInfo[]|nil
+---@param parts MetafrastisCommentParts|nil
+---@return string|nil input
+---@return table|nil layout
+local function build_comment_input(stripped, info, parts)
+  if not (info and parts) then
+    return nil, nil
+  end
+  local segments, para_count = textflow.segment(stripped, info)
+  if para_count == 0 then
+    return nil, nil
+  end
+  local paragraphs = {}
+  for _, seg in ipairs(segments) do
+    if seg.kind == "para" then
+      paragraphs[#paragraphs + 1] = seg.text
+    end
+  end
+  return table.concat(paragraphs, "\n"), { segments = segments, para_count = para_count }
+end
+
+---Lay a coherent translation back into commented buffer lines.
+---
+---Each translated paragraph is re-wrapped to its source column budget (single-
+---source-line paragraphs are kept on one line), raw passthrough lines are
+---preserved, and comment leaders are reapplied per output line. On a paragraph
+---count mismatch (a provider that reformatted the newlines) the whole
+---translation is wrapped as a single block so output is never silently dropped.
+---@param translated string
+---@param layout table
+---@param parts MetafrastisCommentParts
+---@return string[]
+local function assemble_comment_lines(translated, layout, parts)
+  -- Drop any spurious trailing newline a provider appended so the paragraph
+  -- count still matches and well-behaved multi-paragraph mapping is preserved.
+  local translated_paras = util.split_lines((translated:gsub("\n+$", "")))
+  local content_lines = {}
+  local out_info = {}
+
+  if #translated_paras ~= layout.para_count then
+    -- A provider reformatted the paragraph newlines so we can no longer map
+    -- each paragraph back. Preserve raw passthrough lines in place and emit the
+    -- whole translation as one wrapped block at the first paragraph slot, so no
+    -- content (translation or surrounding code) is ever silently dropped.
+    local emitted = false
+    for _, seg in ipairs(layout.segments) do
+      if seg.kind == "raw" then
+        content_lines[#content_lines + 1] = seg.content
+        out_info[#out_info + 1] = { indent = seg.indent, has_comment = seg.has_comment }
+      elseif not emitted then
+        emitted = true
+        for _, line in ipairs(textflow.wrap(translated, seg.width)) do
+          content_lines[#content_lines + 1] = line
+          out_info[#out_info + 1] = { indent = seg.indent, has_comment = true }
+        end
+      end
+    end
+    return comment.reapply(content_lines, out_info, parts)
+  end
+
+  local idx = 0
+  for _, seg in ipairs(layout.segments) do
+    if seg.kind == "raw" then
+      content_lines[#content_lines + 1] = seg.content
+      out_info[#out_info + 1] = { indent = seg.indent, has_comment = seg.has_comment }
+    else
+      idx = idx + 1
+      local para_text = translated_paras[idx] or ""
+      local wrapped
+      if (seg.source_count or 1) <= 1 then
+        wrapped = { para_text }
+      else
+        wrapped = textflow.wrap(para_text, seg.width)
+      end
+      for _, line in ipairs(wrapped) do
+        content_lines[#content_lines + 1] = line
+        out_info[#out_info + 1] = { indent = seg.indent, has_comment = true }
+      end
+    end
+  end
+
+  return comment.reapply(content_lines, out_info, parts)
+end
+
 local function apply_translation_output(
   buffer,
   start_line,
@@ -123,7 +215,8 @@ local function apply_translation_output(
   meta,
   info,
   parts,
-  original_lines
+  original_lines,
+  layout
 )
   local should_replace = opts and opts.replace or M.config.replace
   local translated_lines
@@ -138,15 +231,25 @@ local function apply_translation_output(
   local merged_win = vim.tbl_deep_extend("force", {}, config_win, user_win)
 
   if should_replace then
-    if parts and info then
-      translated_lines = comment.reapply(translated_lines, info, parts)
+    local new_lines
+    if layout then
+      new_lines = assemble_comment_lines(translated, layout, parts)
+      rendered = translated
+    else
+      if parts and info then
+        translated_lines = comment.reapply(translated_lines, info, parts)
+      end
+      new_lines = translated_lines
     end
-    local new_lines = translated_lines
     if #new_lines == 0 then
       new_lines = { "" }
     end
     vim.api.nvim_buf_set_lines(buffer, start_line, end_line, false, new_lines)
     return rendered
+  end
+
+  if layout then
+    rendered = translated
   end
 
   if opts and opts.show_window then
@@ -180,9 +283,11 @@ function M.translate_range(bufnr, start_line, end_line, opts)
   local buffer = bufnr or vim.api.nvim_get_current_buf()
   local lines = vim.api.nvim_buf_get_lines(buffer, start_line, end_line, false)
   local stripped, info, parts = comment.strip_lines(lines, vim.bo[buffer] and vim.bo[buffer].commentstring or nil)
-  local joined = table.concat(stripped, "\n")
+  local input, layout = build_comment_input(stripped, info, parts)
+  local joined = input or table.concat(stripped, "\n")
   local translated, meta = M.translate(joined, opts)
-  local rendered = apply_translation_output(buffer, start_line, end_line, translated, opts, meta, info, parts, stripped)
+  local rendered =
+    apply_translation_output(buffer, start_line, end_line, translated, opts, meta, info, parts, stripped, layout)
   return rendered or translated
 end
 
@@ -318,7 +423,8 @@ function M.translate_selection(bufnr, mode, opts)
   local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec)
   local commentstring = vim.bo[buffer] and vim.bo[buffer].commentstring or nil
   local stripped_lines, info, parts = comment.strip_lines(selected_lines, commentstring)
-  local text = table.concat(stripped_lines, "\n")
+  local input, layout = build_comment_input(stripped_lines, info, parts)
+  local text = input or table.concat(stripped_lines, "\n")
   if text == "" then
     return ""
   end
@@ -327,9 +433,14 @@ function M.translate_selection(bufnr, mode, opts)
   local should_replace = opts and opts.replace or M.config.replace
 
   if should_replace then
-    local out_lines = util.reflow_lines(translated, stripped_lines)
-    if info and parts then
-      out_lines = comment.reapply(out_lines, info, parts)
+    local out_lines
+    if layout then
+      out_lines = assemble_comment_lines(translated, layout, parts)
+    else
+      out_lines = util.reflow_lines(translated, stripped_lines)
+      if info and parts then
+        out_lines = comment.reapply(out_lines, info, parts)
+      end
     end
     replace_selection_text(buffer, mode, sr, sc, er, ec, table.concat(out_lines, "\n"))
     return translated
@@ -363,7 +474,8 @@ function M.translate_selection_async(bufnr, mode, opts, callbacks)
   local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec)
   local commentstring = vim.bo[buffer] and vim.bo[buffer].commentstring or nil
   local stripped_lines, info, parts = comment.strip_lines(selected_lines, commentstring)
-  local text = table.concat(stripped_lines, "\n")
+  local input, layout = build_comment_input(stripped_lines, info, parts)
+  local text = input or table.concat(stripped_lines, "\n")
   if text == "" then
     if callbacks and callbacks.on_success then
       vim.schedule(function()
@@ -378,9 +490,14 @@ function M.translate_selection_async(bufnr, mode, opts, callbacks)
     on_success = function(translated, meta)
       local should_replace = opts and opts.replace or M.config.replace
       if should_replace then
-        local out_lines = util.reflow_lines(translated, stripped_lines)
-        if info and parts then
-          out_lines = comment.reapply(out_lines, info, parts)
+        local out_lines
+        if layout then
+          out_lines = assemble_comment_lines(translated, layout, parts)
+        else
+          out_lines = util.reflow_lines(translated, stripped_lines)
+          if info and parts then
+            out_lines = comment.reapply(out_lines, info, parts)
+          end
         end
         replace_selection_text(buffer, mode, sr, sc, er, ec, table.concat(out_lines, "\n"))
       elseif opts and opts.show_window then
@@ -519,12 +636,13 @@ function M.translate_range_async(bufnr, start_line, end_line, opts, callbacks)
   local buffer = bufnr or vim.api.nvim_get_current_buf()
   local lines = vim.api.nvim_buf_get_lines(buffer, start_line, end_line, false)
   local stripped, info, parts = comment.strip_lines(lines, vim.bo[buffer] and vim.bo[buffer].commentstring or nil)
-  local joined = table.concat(stripped, "\n")
+  local input, layout = build_comment_input(stripped, info, parts)
+  local joined = input or table.concat(stripped, "\n")
   local cb = callbacks or {}
   M.translate_async(joined, opts, {
     on_success = function(translated, meta)
       local rendered =
-        apply_translation_output(buffer, start_line, end_line, translated, opts, meta, info, parts, stripped)
+        apply_translation_output(buffer, start_line, end_line, translated, opts, meta, info, parts, stripped, layout)
       if cb.on_success then
         cb.on_success(rendered or translated, meta)
       end
