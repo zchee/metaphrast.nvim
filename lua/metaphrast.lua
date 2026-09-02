@@ -549,15 +549,17 @@ local function try_apply(source, translated)
     return false, "metaphrast: source text changed since it was translated; translation not applied"
   end
   local out_lines = render_replacement(analyze_lines(source.lines, source.commentstring), translated)
+  -- A rendered entry can itself carry newlines a provider put there, so flatten
+  -- the whole reply once here: `nvim_buf_set_lines` rejects an item containing
+  -- one, and the blockwise cap below has to count the lines that really land.
+  local rendered = table.concat(out_lines, "\n")
+  local flat_lines = util.split_lines(rendered)
   if is_partial_selection(source) then
-    local rendered = table.concat(out_lines, "\n")
     if source.mode == "\22" or source.mode == "" then
       -- A blockwise replacement inserts every rendered line past the block's
       -- row count, and that count comes from the provider's reply, so bound it.
       -- Refusing beats truncating: no content is dropped without saying so.
-      -- Counted after the join, because a rendered line can itself carry
-      -- newlines a provider put there.
-      local rendered_rows = #util.split_lines(rendered)
+      local rendered_rows = #flat_lines
       local rows = #source.lines
       local limit = M.config.max_inserted_lines or 200
       if rendered_rows - rows > limit then
@@ -573,7 +575,7 @@ local function try_apply(source, translated)
     end
     replace_selection_text(buffer, source.mode, source.sr, source.sc, source.er, source.ec, rendered)
   else
-    vim.api.nvim_buf_set_lines(buffer, source.sr, source.er + 1, false, out_lines)
+    vim.api.nvim_buf_set_lines(buffer, source.sr, source.er + 1, false, flat_lines)
   end
   return true
 end

@@ -1103,6 +1103,30 @@ describe("charwise replace", function()
   end)
 end)
 
+describe("linewise replace", function()
+  before_each(function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+  end)
+
+  it("AC18: splits a rendered line carrying provider newlines before writing it back", function()
+    capturing_provider("linewise_newline", function()
+      return "uno\ndos"
+    end)
+    local bufnr = block_buffer({ "  // hello there", "x := 1" }, "// %s", 1, 0, 1, 0)
+
+    local _, applied = metaphrast.translate_range(bufnr, 0, 1, { replace = true, target_lang = "es" })
+
+    -- `nvim_buf_set_lines` rejects an item containing a newline, so handing it
+    -- the rendered table raised `'replacement string' item contains newlines`
+    -- and left the caller with a traceback instead of a write. Reapplying the
+    -- leader to the line the provider split off is a separate layout question;
+    -- what this pins is that the write is legal and reports itself.
+    assert.is_true(applied)
+    assert.same({ "  // uno", "dos", "x := 1" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+end)
+
 describe("ui helper", function()
   local ui = require("metaphrast.ui")
   local notifier
