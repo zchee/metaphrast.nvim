@@ -10,17 +10,59 @@ is `v1.0.0`.
 
 ## [Unreleased]
 
+### Breaking
+
+- snacks.nvim (>= 2.31.0) is a required dependency. `setup()` raises an
+  actionable error when it is missing, and every snacks access goes through
+  `require("metaphrast.ui").require_snacks()`.
+- The plugin was renamed from `metafrastis` to `metaphrast` in the same release:
+  the Lua namespace, the `:Metaphrast*` commands, the `Metaphrast*` highlight
+  groups, the cache directory and the vimdoc all use the new name.
+
+### Added
+
+- LSP-hover-style result window (`lua/metaphrast/ui/hover.lua`): it opens
+  unfocused under the translated range, closes on cursor movement, and is
+  focused by invoking the hover again.
+- Hover keymaps, all configurable under `ui.hover.keys`: `q`/`<Esc>` close, `y`
+  yanks the translation (never the original text or the padding), `r` replaces
+  the source range with the comment leaders re-applied, `o` toggles the original
+  text pane, `p` retranslates with another provider, `?` toggles the help.
+- `require("metaphrast").hover()` and the `<Plug>(MetaphrastHover)` mapping:
+  translate the cursor line, or focus the hover already open for the buffer.
+- `:checkhealth metaphrast` (`lua/metaphrast/health.lua`): snacks presence and
+  version, `curl`, the optional plenary.nvim and render-markdown.nvim, and the
+  current `vim.o.winborder`.
+- `require("metaphrast").apply_result(source, translated)` and
+  `require("metaphrast").retranslate(source, opts)`: the write-back and
+  reprovider paths the hover keys use, exported for other callers.
+- `ui.hover` and `ui.notify` configuration sections, plus `ui.win` bounds
+  (`min_width`, `max_width`, `min_height`, `max_height`), `winblend` and
+  `backdrop`. Unknown `ui.win` keys are reported once by name.
+
 ### Changed
 
-- **Breaking:** snacks.nvim is now a required dependency; the result window was
-  rebuilt as an LSP-hover-style popup (see README). `setup()` raises an
-  actionable error when snacks.nvim is not installed, and the previous
-  `vim.notify` / `nvim_echo` / `vim.ui.input` fallbacks are gone.
+- The result window was rebuilt around `snacks.win` (see README).
+- Padding is chrome, not text: `padding.left` is rendered through
+  `wo.statuscolumn` and `padding.top`/`padding.bottom` through virtual lines, so
+  yanking the translation no longer yanks the indent.
+- Progress and the finished message now share one notifier toast, updated in
+  place by id, instead of stacking two toasts.
+- A provider that fails validation now raises instead of silently rewriting the
+  configured provider to `echo`. `setup()` keeps its own warn-and-fall-back to
+  `echo` for the initial configuration.
 - Default `ui.win.padding` is now `{ top = 0, bottom = 0, left = 1, right = 1 }`
-  (was `{ 0, 0, 0, 0 }`). Padding is chrome: it no longer enters the buffer
-  text, so yanking the translation no longer yanks the indent.
+  (was `{ 0, 0, 0, 0 }`).
 - Default `ui.win.backdrop` is now `false` (was `40`).
 - Default `ui.win.border` now follows `vim.o.winborder`, falling back to
   `"rounded"` when it is unset (was always `"rounded"`).
 
 Users who set any of these keys explicitly are unaffected.
+
+### Removed
+
+- The `vim.notify` / `nvim_echo` / `vim.ui.input` fallbacks used when snacks.nvim
+  was absent. Notifications, the target-language prompt and the result window are
+  snacks-only.
+- Per-call window overrides (`opts.win`); `ui.win` from `setup()` is the only
+  source of window configuration.
