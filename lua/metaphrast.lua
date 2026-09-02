@@ -378,9 +378,16 @@ end
 ---@return integer cend 0-indexed byte offset just past the block's last byte.
 local function block_columns(line, sc, ec)
   local cstart = math.min(sc, #line)
-  local cend = math.max(math.min(ec, #line), cstart)
+  local cend = math.min(ec, #line)
+  -- Whether the row clamped to nothing is decided before either end moves:
+  -- widening `cstart` back and `cend` forward pulls a whole codepoint into a
+  -- region the clamp had just emptied, deleting it from the row.
+  local empty = cend <= cstart
   if cstart > 0 and cstart < #line then
     cstart = cstart + vim.str_utf_start(line, cstart + 1)
+  end
+  if empty then
+    return cstart, cstart
   end
   if cend > 0 and cend < #line then
     cend = cend + vim.str_utf_end(line, cend)
@@ -893,6 +900,11 @@ end
 function M.clear_cache()
   cache.clear(M.config.cache)
 end
+
+-- Test helper: the blockwise column resolver, exposed so its boundary cases
+-- (clamped-empty rows, codepoint snapping at both ends) can be asserted
+-- directly instead of only end to end.
+M._block_columns = block_columns
 
 -- Test helper
 function M._reset_for_tests()

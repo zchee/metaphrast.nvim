@@ -861,6 +861,25 @@ describe("blockwise replace", function()
     assert.same({ "    // alpha beta gamma", "ab" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 
+  it("AC4b: keeps the clamped-empty region empty on a multibyte row", function()
+    local captured = capturing_provider("block_short_row_cjk", function(text)
+      return text .. " [cap]"
+    end)
+    -- Column 4 falls inside the 3-byte `日`; the short last row gives `ec < sc`.
+    local original = { "  日本語アイウ", "ab" }
+    local bufnr = block_buffer(original, "// %s", 1, 4, 2, 22)
+
+    local translated = metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- Snapping `cstart` back and `cend` forward around the same codepoint would
+    -- reopen the emptied region and delete that character from the row.
+    assert.equals("", translated)
+    assert.is_nil(captured())
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    local cstart, cend = metaphrast._block_columns(original[1], 4, 2)
+    assert.equals(cstart, cend)
+  end)
+
   it("AC5: keeps a multibyte block on codepoint boundaries", function()
     local captured = capturing_provider("block_multibyte", function(text)
       return text .. " [echo]->es"
@@ -939,6 +958,27 @@ describe("blockwise replace", function()
     assert.truthy(reason:find("max_inserted_lines", 1, true), reason)
     assert.truthy(reason:find("200", 1, true), reason)
     assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC14: resolves the block columns at every boundary", function()
+    -- `abc日本語`: `日` is bytes 4-6, `本` 7-9, `語` 10-12.
+    local line = "abc日本語"
+    local cases = {
+      { "sc inside a codepoint snaps back", line, 4, 12, 3, 12 },
+      { "sc on the codepoint's last byte snaps back", line, 5, 12, 3, 12 },
+      { "ec inside a codepoint snaps forward", line, 0, 4, 0, 6 },
+      { "ec on the codepoint's last byte snaps forward", line, 0, 5, 0, 6 },
+      { "cstart clamped to the row end stays there", "ab", 6, 20, 2, 2 },
+      { "cend of zero is left alone", "日本語", 0, 0, 0, 0 },
+      { "an empty row yields an empty region", "", 4, 9, 0, 0 },
+      { "an ASCII block is untouched", "  // hello", 2, 10, 2, 10 },
+    }
+    for _, case in ipairs(cases) do
+      local label, subject, sc, ec, want_start, want_end = unpack(case)
+      local cstart, cend = metaphrast._block_columns(subject, sc, ec)
+      assert.equals(want_start, cstart, label .. " (cstart)")
+      assert.equals(want_end, cend, label .. " (cend)")
+    end
   end)
 end)
 
