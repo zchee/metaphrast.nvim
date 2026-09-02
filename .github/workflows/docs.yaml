@@ -6,18 +6,18 @@ on:
 name: docs
 jobs:
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: panvimdoc
         uses: kdheepak/panvimdoc@main
         with:
-          vimdoc: my-template-docs
+          vimdoc: metaphrast
           version: "Neovim >= 0.8.0"
           demojify: true
           treesitter: true
       - name: Push changes
-        uses: stefanzweifel/git-auto-commit-action@v6
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: "chore(ci): auto-generate vimdoc"
           commit_user_name: "github-actions[bot]"
