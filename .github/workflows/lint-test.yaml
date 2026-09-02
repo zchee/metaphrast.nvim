@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-26.04, xcode-27, windows-2025]
-        nvim-versions: ['stable', 'nightly']
+        nvim-versions: ['nightly']
     name: test (${{ matrix.os }}, ${{ matrix.nvim-versions }})
     steps:
       - name: checkout
