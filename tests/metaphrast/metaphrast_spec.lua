@@ -960,6 +960,52 @@ describe("blockwise replace", function()
     assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 
+  it("AC11: measures the surplus pad with the source buffer's tabstop", function()
+    local bufnr =
+      block_buffer({ "\tfoo(); // alpha beta", "\tbar(); // gamma delta", "\tbaz();" }, "// %s", 1, 8, 2, 21)
+    vim.bo[bufnr].tabstop = 2
+    -- `strdisplaywidth` reads 'tabstop' from the *current* buffer, and the
+    -- hover float (or any other buffer) can be current when the write lands.
+    local elsewhere = vim.api.nvim_create_buf(false, true)
+    vim.bo[elsewhere].tabstop = 8
+    vim.api.nvim_set_current_buf(elsewhere)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- Nine columns: `\tfoo(); ` under tabstop 2, not the 15 tabstop 8 would give.
+    assert.same({
+      "\tfoo(); // alpha beta",
+      "\tbar(); // gamma delta",
+      "         // [echo]->es",
+      "\tbaz();",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC12: leaves a blank surplus line empty instead of pad-only whitespace", function()
+    capturing_provider("block_blank_surplus", function()
+      return "alpha beta gamma delta epsilon\n\nzeta"
+    end)
+    local bufnr = block_buffer({ "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }, "// %s", 1, 2, 2, 15)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    -- A pad-only line is trailing whitespace the user never wrote, and every
+    -- trim-on-save formatter would report it as their diff.
+    assert.same({
+      "  // alpha beta  TAIL1",
+      "  // gamma delta  TAIL2",
+      "  // epsilon",
+      "",
+      "",
+      "  // zeta",
+      "x := 1",
+    }, lines)
+    for i, line in ipairs(lines) do
+      assert.is_falsy(line:match("^%s+$"), string.format("line %d is whitespace only: %q", i, line))
+    end
+  end)
+
   it("AC14: resolves the block columns at every boundary", function()
     -- `abc日本語`: `日` is bytes 4-6, `本` 7-9, `語` 10-12.
     local line = "abc日本語"

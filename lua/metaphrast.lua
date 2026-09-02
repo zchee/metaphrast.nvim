@@ -484,9 +484,20 @@ local function replace_selection_text(bufnr, mode, sr, sc, er, ec, replacement)
     if #rep_lines > rows then
       local cstart = block_columns(last_line, sc, ec)
       local left = last_line:sub(1, cstart)
-      local pad = left:match("%S") and string.rep(" ", vim.fn.strdisplaywidth(left)) or left
+      local pad = left
+      if left:match("%S") then
+        -- `strdisplaywidth` resolves tabs against the *current* buffer's
+        -- 'tabstop', and `bufnr` need not be current (the hover float is, on
+        -- the `r` path), so measure the left part inside the target buffer.
+        local width = vim.api.nvim_buf_call(bufnr, function()
+          return vim.fn.strdisplaywidth(left)
+        end)
+        pad = string.rep(" ", width)
+      end
       for i = rows + 1, #rep_lines do
-        buf_lines[#buf_lines + 1] = pad .. rep_lines[i]
+        -- A blank rendered line stays blank: there is nothing to align under,
+        -- and a pad-only line is trailing whitespace the user did not write.
+        buf_lines[#buf_lines + 1] = rep_lines[i] ~= "" and (pad .. rep_lines[i]) or ""
       end
     end
     vim.api.nvim_buf_set_lines(bufnr, sr, er + 1, false, buf_lines)
