@@ -1063,6 +1063,22 @@ describe("blockwise replace", function()
       "x := 1",
     }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
+
+  it("AC17: leaves the block's marks raw so one row's codepoints cannot widen another", function()
+    local captured = capturing_provider("block_mark_widening", function(text)
+      return text .. " [cap]"
+    end)
+    -- `'>` holds the first byte of `本` on the CJK end row. Snapping it forward
+    -- there — as charwise does — would move the block's shared end column two
+    -- bytes right, widening the ASCII row above onto text the user never
+    -- selected. `block_columns` re-snaps per row, so the CJK row is whole
+    -- either way and the entire difference lands on the other row.
+    local bufnr = block_buffer({ "  // abcdefgh", "  // 日本語" }, "// %s", 1, 2, 2, 8)
+
+    metaphrast.translate_selection(bufnr, "\22", { target_lang = "es" })
+
+    assert.equals("abcd 日本", captured())
+  end)
 end)
 
 describe("charwise replace", function()

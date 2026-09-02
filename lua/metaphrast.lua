@@ -349,12 +349,24 @@ local function get_visual_positions(bufnr, mode)
     sc = 0
     local end_line_text = vim.api.nvim_buf_get_lines(bufnr, er, er + 1, false)[1] or ""
     ec = #end_line_text
+  elseif mode == "\22" or mode == "" then
+    -- Blockwise: `sc`/`ec` are shared by every row and `block_columns` snaps
+    -- both ends against the row it is resolving, so widening them here against
+    -- the start and end rows would move the block's edges on all the others.
+    -- End col from the mark is inclusive; make it exclusive and leave it raw.
+    local end_line_text = vim.api.nvim_buf_get_lines(bufnr, er, er + 1, false)[1] or ""
+    if ec >= #end_line_text then
+      ec = #end_line_text
+    else
+      ec = ec + 1
+    end
   else
-    -- For charwise and blockwise, end col from mark is inclusive; make it
-    -- exclusive. The mark holds the *first* byte of the last selected
-    -- character, so `ec + 1` alone would cut a multibyte sequence apart;
-    -- widen to the end of that codepoint instead. `sc` is snapped back the
-    -- same way so the start of the selection is never mid-sequence either.
+    -- For charwise, end col from mark is inclusive; make it exclusive. The
+    -- mark holds the *first* byte of the last selected character, so `ec + 1`
+    -- alone would cut a multibyte sequence apart; widen to the end of that
+    -- codepoint instead. `sc` is snapped back the same way so the start of the
+    -- selection is never mid-sequence either. Only one row is sliced by these
+    -- two columns, so there is no other row for them to widen.
     local start_line_text = vim.api.nvim_buf_get_lines(bufnr, sr, sr + 1, false)[1] or ""
     if sc > 0 and sc < #start_line_text then
       sc = sc + vim.str_utf_start(start_line_text, sc + 1)
