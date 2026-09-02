@@ -350,12 +350,20 @@ local function get_visual_positions(bufnr, mode)
     local end_line_text = vim.api.nvim_buf_get_lines(bufnr, er, er + 1, false)[1] or ""
     ec = #end_line_text
   else
-    -- For charwise and blockwise, end col from mark is inclusive; make it exclusive.
+    -- For charwise and blockwise, end col from mark is inclusive; make it
+    -- exclusive. The mark holds the *first* byte of the last selected
+    -- character, so `ec + 1` alone would cut a multibyte sequence apart;
+    -- widen to the end of that codepoint instead. `sc` is snapped back the
+    -- same way so the start of the selection is never mid-sequence either.
+    local start_line_text = vim.api.nvim_buf_get_lines(bufnr, sr, sr + 1, false)[1] or ""
+    if sc > 0 and sc < #start_line_text then
+      sc = sc + vim.str_utf_start(start_line_text, sc + 1)
+    end
     local end_line_text = vim.api.nvim_buf_get_lines(bufnr, er, er + 1, false)[1] or ""
     if ec >= #end_line_text then
       ec = #end_line_text
     else
-      ec = ec + 1
+      ec = ec + 1 + vim.str_utf_end(end_line_text, ec + 1)
     end
   end
 

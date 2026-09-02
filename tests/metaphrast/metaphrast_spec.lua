@@ -759,51 +759,51 @@ describe("visual selection translation", function()
   end)
 end)
 
+---Open a scratch buffer holding `buf_lines` with the visual marks a
+---selection reads.
+---@param buf_lines string[]
+---@param commentstring string
+---@param start_row integer 1-indexed
+---@param start_col integer 0-indexed
+---@param end_row integer 1-indexed
+---@param end_col integer 0-indexed, inclusive
+---@return integer bufnr
+local function block_buffer(buf_lines, commentstring, start_row, start_col, end_row, end_col)
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.bo[bufnr].commentstring = commentstring
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, buf_lines)
+  vim.api.nvim_buf_set_mark(bufnr, "<", start_row, start_col, {})
+  vim.api.nvim_buf_set_mark(bufnr, ">", end_row, end_col, {})
+  return bufnr
+end
+
+---Register a provider that records the text it was handed.
+---@param name string
+---@param reply fun(text: string): string
+---@return fun(): string|nil captured
+local function capturing_provider(name, reply)
+  local captured
+  registry.register(name, {
+    translate = function(_, payload)
+      captured = payload.text
+      return reply(payload.text)
+    end,
+    estimate_cost = function()
+      return 0
+    end,
+  })
+  metaphrast.config.provider = name
+  return function()
+    return captured
+  end
+end
+
 describe("blockwise replace", function()
   before_each(function()
     metaphrast._reset_for_tests()
     metaphrast.setup({ provider = "echo" })
   end)
-
-  ---Open a scratch buffer holding `buf_lines` with the visual marks a
-  ---blockwise selection reads.
-  ---@param buf_lines string[]
-  ---@param commentstring string
-  ---@param start_row integer 1-indexed
-  ---@param start_col integer 0-indexed
-  ---@param end_row integer 1-indexed
-  ---@param end_col integer 0-indexed, inclusive
-  ---@return integer bufnr
-  local function block_buffer(buf_lines, commentstring, start_row, start_col, end_row, end_col)
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.bo[bufnr].commentstring = commentstring
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, buf_lines)
-    vim.api.nvim_buf_set_mark(bufnr, "<", start_row, start_col, {})
-    vim.api.nvim_buf_set_mark(bufnr, ">", end_row, end_col, {})
-    return bufnr
-  end
-
-  ---Register a provider that records the text it was handed.
-  ---@param name string
-  ---@param reply fun(text: string): string
-  ---@return fun(): string|nil captured
-  local function capturing_provider(name, reply)
-    local captured
-    registry.register(name, {
-      translate = function(_, payload)
-        captured = payload.text
-        return reply(payload.text)
-      end,
-      estimate_cost = function()
-        return 0
-      end,
-    })
-    metaphrast.config.provider = name
-    return function()
-      return captured
-    end
-  end
 
   it("AC1: inserts the surplus wrapped line under the block instead of dropping it", function()
     local original = { "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }
@@ -979,6 +979,28 @@ describe("blockwise replace", function()
       assert.equals(want_start, cstart, label .. " (cstart)")
       assert.equals(want_end, cend, label .. " (cend)")
     end
+  end)
+end)
+
+describe("charwise replace", function()
+  before_each(function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+  end)
+
+  it("AC13: snaps a charwise end column to the end of its codepoint", function()
+    local captured = capturing_provider("charwise_multibyte", function(text)
+      return text .. " [cap]"
+    end)
+    -- `'<` lands mid-`日` and `'>` holds the *first* byte of `語`, so making the
+    -- end exclusive by one byte would hand the provider two thirds of that
+    -- character, and an unsnapped start would sever the first one.
+    local bufnr = block_buffer({ "abc 日本語 def" }, "// %s", 1, 5, 1, 10)
+
+    metaphrast.translate_selection(bufnr, "v", { replace = true, target_lang = "es" })
+
+    assert.equals("日本語", captured())
+    assert.same({ "abc 日本語 [cap] def" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 end)
 
