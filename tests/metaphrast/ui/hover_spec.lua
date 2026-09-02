@@ -531,3 +531,291 @@ describe("hover state when hidden", function()
     assert.is_false(hover.yank())
   end)
 end)
+
+describe("hover integration", function()
+  local metaphrast = require("metaphrast")
+  local original_mode = vim.fn.mode
+  local original_feedkeys = vim.api.nvim_feedkeys
+
+  local function count_floats()
+    local count = 0
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      local is_float = vim.api.nvim_win_get_config(win).relative ~= ""
+      if is_float and vim.bo[vim.api.nvim_win_get_buf(win)].filetype ~= "snacks_notif" then
+        count = count + 1
+      end
+    end
+    return count
+  end
+
+  local function open_buffer(buf_lines, commentstring)
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_set_current_buf(bufnr)
+    if commentstring then
+      vim.bo[bufnr].commentstring = commentstring
+    end
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, buf_lines)
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    return bufnr
+  end
+
+  local function translate_open(bufnr, target_lang, last_line)
+    local done = false
+    metaphrast.translate_range_async(bufnr, 0, last_line or 1, {
+      target_lang = target_lang,
+      show_window = true,
+      replace = false,
+    }, {
+      on_success = function()
+        done = true
+      end,
+      on_error = function(err)
+        done = true
+        error(err)
+      end,
+    })
+    assert.is_true(vim.wait(1000, function()
+      return done
+    end))
+    assert.equals("shown", hover.debug().state)
+  end
+
+  local function capture_feedkeys()
+    local calls = {}
+    vim.api.nvim_feedkeys = function(keys, mode, escape_ks)
+      calls[#calls + 1] = { keys = keys, mode = mode, escape_ks = escape_ks }
+    end
+    return calls
+  end
+
+  before_each(function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+  end)
+
+  after_each(function()
+    vim.fn.mode = original_mode
+    vim.api.nvim_feedkeys = original_feedkeys
+    hover._reset_for_tests()
+  end)
+
+  it("opens an unfocused hover whose text is exactly the translation", function()
+    local bufnr = open_buffer({ "Hello world" })
+    local source_win = vim.api.nvim_get_current_win()
+
+    translate_open(bufnr, "es")
+
+    local state = hover.debug()
+    assert.same({ "Hello world [echo]->es" }, state.result.display_lines)
+    assert.same({ "Hello world [echo]->es" }, vim.api.nvim_buf_get_lines(state.buf, 0, -1, false))
+    assert.equals(source_win, vim.api.nvim_get_current_win())
+    assert.equals(1, count_floats())
+    local win_config = vim.api.nvim_win_get_config(state.win)
+    assert.equals("win", win_config.relative)
+    assert.equals(source_win, win_config.win)
+    assert.same(theme.footer_chips(metaphrast.config.ui.hover.keys, false), win_config.footer)
+    assert.is_true(hover.is_open_for(bufnr))
+  end)
+
+  it("applies ui.win width and border from setup", function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo", ui = { win = { width = 55, border = "single" } } })
+    local bufnr = open_buffer({ "Hello" })
+
+    translate_open(bufnr, "es")
+
+    local state = hover.debug()
+    assert.equals(55, state.geometry.width)
+    local win_config = vim.api.nvim_win_get_config(state.win)
+    assert.equals(55, win_config.width)
+    assert.equals(8, #win_config.border)
+    assert.equals("┌", win_config.border[1][1] or win_config.border[1])
+  end)
+
+  it("pads through virtual lines and the statuscolumn, never the text", function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo", ui = { win = { padding = { top = 1, bottom = 1, left = 2, right = 2 } } } })
+    local bufnr = open_buffer({ "Hello" })
+
+    translate_open(bufnr, "es")
+
+    local state = hover.debug()
+    assert.same({ "Hello [echo]->es" }, vim.api.nvim_buf_get_lines(state.buf, 0, -1, false))
+    assert.equals("  ", vim.wo[state.win].statuscolumn)
+    assert.equals(2, #vim.api.nvim_buf_get_extmarks(state.buf, theme.ns_layout, 0, -1, {}))
+    assert.equals(0, #vim.api.nvim_buf_get_extmarks(state.buf, theme.ns_hl, 0, -1, {}))
+    assert.equals(3, vim.api.nvim_win_get_height(state.win))
+  end)
+
+  it("closes on CursorMoved in the source buffer", function()
+    local bufnr = open_buffer({ "Hello world", "second" })
+    translate_open(bufnr, "es")
+
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = bufnr, modeline = false })
+
+    local state = hover.debug()
+    assert.equals("hidden", state.state)
+    assert.equals(1, state.close_count)
+    assert.equals(0, count_floats())
+    assert.is_false(hover.is_open_for(bufnr))
+  end)
+
+  it("closes on InsertEnter in the source buffer", function()
+    local bufnr = open_buffer({ "Hello world" })
+    translate_open(bufnr, "es")
+
+    vim.api.nvim_exec_autocmds("InsertEnter", { buffer = bufnr, modeline = false })
+
+    assert.equals("hidden", hover.debug().state)
+    assert.equals(1, hover.debug().close_count)
+  end)
+
+  it("leaves visual mode when CursorMoved closes the hover", function()
+    local bufnr = open_buffer({ "Hello world" })
+    translate_open(bufnr, "es")
+    vim.fn.mode = function()
+      return "v"
+    end
+    local calls = capture_feedkeys()
+
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = bufnr, modeline = false })
+
+    local expected_esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
+    assert.equals("hidden", hover.debug().state)
+    assert.equals(1, #calls)
+    assert.equals(expected_esc, calls[1].keys)
+    assert.equals("nx", calls[1].mode)
+    assert.is_false(calls[1].escape_ks)
+  end)
+
+  it("does not feed Escape when CursorMovedI closes it in insert mode", function()
+    local bufnr = open_buffer({ "Hello world" })
+    translate_open(bufnr, "es")
+    vim.fn.mode = function()
+      return "i"
+    end
+    local calls = capture_feedkeys()
+
+    vim.api.nvim_exec_autocmds("CursorMovedI", { buffer = bufnr, modeline = false })
+
+    assert.equals("hidden", hover.debug().state)
+    assert.equals(0, #calls)
+  end)
+
+  it("counts one close per window when a newer hover replaces the old one", function()
+    local bufnr = open_buffer({ "Hello world" })
+    translate_open(bufnr, "es")
+    translate_open(bufnr, "de")
+    assert.equals(1, hover.debug().close_count)
+    vim.fn.mode = function()
+      return "v"
+    end
+    local calls = capture_feedkeys()
+
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = bufnr, modeline = false })
+
+    assert.equals(2, hover.debug().close_count)
+    assert.equals(1, #calls)
+  end)
+
+  it("focuses on the second invocation without moving and closes with q", function()
+    local bufnr = open_buffer({ "Hello world" })
+    translate_open(bufnr, "es")
+    local state = hover.debug()
+    vim.cmd("redraw")
+    local pos = vim.api.nvim_win_get_position(state.win)
+
+    metaphrast.hover()
+
+    assert.equals("focused", hover.debug().state)
+    assert.equals(state.win, vim.api.nvim_get_current_win())
+    vim.cmd("redraw")
+    assert.same(pos, vim.api.nvim_win_get_position(state.win))
+    assert.same(
+      theme.footer_chips(metaphrast.config.ui.hover.keys, true),
+      vim.api.nvim_win_get_config(state.win).footer
+    )
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = state.buf, modeline = false })
+    assert.equals("focused", hover.debug().state)
+
+    -- Calling hover() from inside the hover is a no-op.
+    metaphrast.hover()
+    assert.equals("focused", hover.debug().state)
+
+    vim.api.nvim_feedkeys("q", "x", false)
+
+    assert.equals("hidden", hover.debug().state)
+    assert.equals(0, count_floats())
+  end)
+
+  it("replaces the source through r, keeping comment leaders", function()
+    local bufnr = open_buffer({ "// hello there", "code()" }, "// %s")
+    translate_open(bufnr, "es")
+    metaphrast.hover()
+    assert.equals("focused", hover.debug().state)
+
+    vim.api.nvim_feedkeys("r", "x", false)
+
+    assert.equals("hidden", hover.debug().state)
+    local buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    assert.equals("// hello there [echo]->es", buf_lines[1])
+    assert.equals("code()", buf_lines[2])
+  end)
+
+  it("refuses to replace when the source changed and stays focused", function()
+    local bufnr = open_buffer({ "Hello world" })
+    translate_open(bufnr, "es")
+    metaphrast.hover()
+    vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, { "Hello edited" })
+
+    assert.is_false(hover.replace())
+
+    assert.equals("focused", hover.debug().state)
+    assert.equals("Hello edited", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
+  end)
+
+  it("toggles the original text with o and yanks only the translation", function()
+    local bufnr = open_buffer({ "// hello there" }, "// %s")
+    translate_open(bufnr, "es")
+    metaphrast.hover()
+    local state = hover.debug()
+
+    vim.api.nvim_feedkeys("o", "x", false)
+
+    assert.same({ "hello there", "hello there [echo]->es" }, vim.api.nvim_buf_get_lines(state.buf, 0, -1, false))
+    assert.equals(1, #vim.api.nvim_buf_get_extmarks(state.buf, theme.ns_hl, 0, -1, {}))
+
+    vim.fn.setreg('"', "")
+    vim.api.nvim_feedkeys("y", "x", false)
+    assert.equals("hello there [echo]->es", vim.fn.getreg('"'))
+
+    vim.api.nvim_feedkeys("o", "x", false)
+    assert.same({ "hello there [echo]->es" }, vim.api.nvim_buf_get_lines(state.buf, 0, -1, false))
+  end)
+
+  it("refuses to open when the source window is not current", function()
+    local bufnr = open_buffer({ "Hello world" })
+    local source_win = vim.api.nvim_get_current_win()
+    vim.cmd("vsplit")
+    local other_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_set_current_buf(vim.api.nvim_create_buf(false, true))
+    local notifier = require("metaphrast.ui").require_snacks().notifier
+    local before = #notifier.get_history()
+
+    local shown = require("metaphrast.ui").show(
+      { buf = bufnr, win = source_win, sr = 0, er = 0, lines = { "Hello world" } },
+      { translated = "hola", display_lines = { "hola" }, meta = {}, opts = {} }
+    )
+
+    assert.is_false(shown)
+    assert.equals("hidden", hover.debug().state)
+    assert.equals(0, count_floats())
+    local history = notifier.get_history()
+    assert.equals(before + 1, #history)
+    local entry = history[#history]
+    assert.equals("error", entry.level)
+    assert.truthy(entry.msg:find("hola", 1, true))
+    vim.api.nvim_win_close(other_win, true)
+  end)
+end)
