@@ -21,6 +21,11 @@ is `v1.0.0`.
 
 ### Added
 
+- `max_inserted_lines` (default 200): the most lines a blockwise replacement
+  may insert below the block. The rendered line count comes from the provider's
+  reply, so an overlong or malformed response could grow the buffer without
+  bound. Exceeding it refuses the write-back with a message instead of
+  truncating, reaching the caller as `applied == false` and an error toast.
 - LSP-hover-style result window (`lua/metaphrast/ui/hover.lua`): it opens
   unfocused under the translated range, closes on cursor movement, and is
   focused by invoking the hover again.
@@ -89,3 +94,20 @@ Users who set any of these keys explicitly are unaffected.
 - A block over multibyte text could cut a UTF-8 sequence in half, sending
   invalid bytes to the provider and writing them back. Both column ends are now
   widened to whole codepoints.
+- Widening a blockwise region to whole codepoints reopened a row the per-row
+  clamp had just emptied, so a short last row deleted one character from every
+  multibyte row of the block. Emptiness is now decided before either end moves.
+- A charwise (`v`) selection ending on a multibyte character was cut one *byte*
+  past the mark, handing the provider a broken UTF-8 sequence and splicing the
+  reply into the middle of a character. Both ends of a charwise or blockwise
+  selection are now snapped to codepoint boundaries.
+- A blockwise selection that clamps to nothing on every row produced a payload
+  of newlines only. It was still sent — billing a provider for nothing — and
+  the reply was written into a line the user had not selected. A blank
+  selection now returns without calling the provider.
+- The surplus line's indent was measured with `strdisplaywidth` against
+  whichever buffer happened to be current (the hover float, on the `r` path),
+  so a tab-indented block could be aligned to the wrong `'tabstop'`. It is now
+  measured inside the buffer being written.
+- A blank rendered surplus line was written as a run of pad spaces. Blank
+  lines now stay empty, so a trim-on-save formatter has nothing to report.

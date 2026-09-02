@@ -57,6 +57,7 @@ require("metaphrast").setup({
   provider = "openai", -- auto-falls back to echo if missing API key
   target_lang = "en",
   max_chars = 8000,
+  max_inserted_lines = 200, -- cap on lines a blockwise replace may add below the block
   cache = {
     enabled = true,
     ttl = 7 * 24 * 3600,
@@ -195,7 +196,7 @@ the window lands.
 - `:MetaphrastTranslate [source] [target]`
   - Operates on the given range (default current line).
   - Use `!` to replace buffer text; otherwise the translation opens in the hover window.
-  - Replacing a blockwise (`<C-v>`) selection can produce more lines than the block has rows, because the selected comment rows are translated as one paragraph and re-wrapped. The extra lines are inserted directly below the block, aligned under its left edge, in the same undo step.
+  - Replacing a blockwise (`<C-v>`) selection can produce more lines than the block has rows, because the selected comment rows are translated as one paragraph and re-wrapped. The extra lines are inserted directly below the block, aligned under its left edge, in the same undo step. A reply that would insert more than `max_inserted_lines` (default 200) is refused with an error toast rather than truncated.
   - Prompts for the target language when omitted (`snacks.input`).
   - Runs asynchronously; progress and the final message share one notifier toast.
   - Called without a range while a hover is already open for the current buffer, it focuses that hover instead of translating again.
