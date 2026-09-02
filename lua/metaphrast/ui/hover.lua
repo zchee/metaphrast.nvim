@@ -87,6 +87,7 @@ local function new_instance()
     source_group = nil,
     hover_group = nil,
     measure_gen = 0,
+    corrections = 0,
   }
 end
 
@@ -608,6 +609,7 @@ local function measure()
   end
   local all = vim.api.nvim_win_text_height(instance.win.win, {}).all
   update_geometry({ measured_text_height = math.max(1, all - instance.content.virt_rows) })
+  instance.corrections = instance.corrections + 1
 end
 
 local function schedule_measure(delay)
@@ -994,7 +996,9 @@ function M.is_open_for(buf)
 end
 
 ---Snapshot of the hover state for `:checkhealth`-style inspection and tests.
----@return table debug `state`, `source`, `geometry`, `close_count`, `last_error`, `result`, `win`, `buf`.
+---`corrections` counts the post-render height corrections that have run, so a
+---test can wait on one instead of sleeping for it.
+---@return table debug `state`, `source`, `geometry`, `close_count`, `last_error`, `result`, `win`, `buf`, `corrections`.
 function M.debug()
   local source = instance.source
   return {
@@ -1002,6 +1006,7 @@ function M.debug()
     source = source and { buf = source.buf, win = source.win, sr = source.sr, er = source.er } or nil,
     geometry = instance.geometry and vim.deepcopy(instance.geometry) or nil,
     close_count = instance.close_count,
+    corrections = instance.corrections,
     last_error = instance.last_error,
     result = instance.result,
     original_visible = instance.original_visible,

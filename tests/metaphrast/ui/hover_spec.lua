@@ -987,20 +987,46 @@ describe("hover integration", function()
     assert.truthy(entry.msg:find("not applied", 1, true))
     assert.equals("Hello edited", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
     assert.equals("hidden", hover.debug().state)
+    -- The command path reports through the progress id only; a fresh error
+    -- toast on top of it would double-report the same refusal.
+    assert.equals(ui_mod.PROGRESS_ID, newest_entry().id)
   end)
 
-  it("returns applied = false from the sync API when the write-back is refused", function()
+  it("returns applied = true from the sync API when the source is unchanged", function()
     local bufnr = open_buffer({ "Hello world" })
-    local source_lines = vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)
     local translated_before, applied_before = metaphrast.translate_range(bufnr, 0, 1, { target_lang = "es" })
     assert.equals("Hello world [echo]->es", translated_before)
     assert.is_nil(applied_before)
 
-    vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, source_lines)
     local _, applied = metaphrast.translate_range(bufnr, 0, 1, { target_lang = "es", replace = true })
 
     assert.is_true(applied)
     assert.equals("Hello world [echo]->es", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
+  end)
+
+  it("returns applied = false and toasts once when the sync write-back is refused", function()
+    local bufnr = open_buffer({ "Hello sync refusal" })
+    -- Edit the range from inside the provider, so the write-back re-reads text
+    -- other than the lines it was handed and has to refuse.
+    metaphrast.register_provider("mutating", {
+      translate = function(_, payload)
+        vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, { "Hello CHANGED" })
+        return payload.text .. " [mutating]"
+      end,
+    })
+    local notifier = notifier_api()
+    local before = #notifier.get_history()
+
+    local _, applied, reason =
+      metaphrast.translate_range(bufnr, 0, 1, { provider = "mutating", target_lang = "es", replace = true })
+
+    assert.is_false(applied)
+    assert.truthy(reason:find("not applied", 1, true))
+    assert.equals("Hello CHANGED", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
+    local history = notifier.get_history()
+    assert.equals(before + 1, #history)
+    assert.equals("error", history[#history].level)
+    assert.equals(reason, history[#history].msg)
   end)
 
   it("keeps hover() read-only when config.replace is true", function()
@@ -1030,7 +1056,10 @@ describe("hover integration", function()
     end))
     assert.equals("Hello world [echo]->es", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
     assert.equals(source_win, vim.api.nvim_get_current_win())
-    assert.not_equals("focused", hover.debug().state)
+    -- The bang overwrote the lines that hover translated, so it is closed
+    -- rather than left showing a translation of text that is gone.
+    assert.equals("hidden", hover.debug().state)
+    assert.equals(0, count_floats())
   end)
 
   it("sets the hover buffer filetype once across focus, o and VimResized", function()
@@ -1048,8 +1077,12 @@ describe("hover integration", function()
     metaphrast.hover()
     assert.is_true(hover.toggle_original())
     vim.api.nvim_exec_autocmds("VimResized", { modeline = false })
-    -- Let the scheduled and deferred post-render corrections run too.
-    vim.wait(200)
+    -- `show()` queues two post-render corrections (one scheduled, one deferred
+    -- by 100 ms) and the resize queues a third. Wait for all three rather than
+    -- sleeping, so a slow runner cannot make the count below vacuous.
+    assert.is_true(vim.wait(1000, function()
+      return hover.debug().corrections >= 3
+    end))
 
     local state = hover.debug()
     assert.equals("markdown", vim.bo[state.buf].filetype)
@@ -1075,7 +1108,16 @@ describe("hover integration", function()
     translate_open(bufnr, "es")
     metaphrast.hover()
     local state = hover.debug()
+    -- A float's screen position is only final once it has been laid out, and
+    -- the post-render corrections can still move it; sample it after two reads
+    -- agree, so the comparison below is about CursorHold and nothing else.
     local pos = outer_pos(state.win)
+    assert.is_true(vim.wait(1000, function()
+      local now = outer_pos(state.win)
+      local settled = now[1] == pos[1] and now[2] == pos[2]
+      pos = now
+      return settled
+    end))
 
     vim.api.nvim_exec_autocmds("CursorHold", { buffer = state.buf, modeline = false })
 
@@ -1218,6 +1260,77 @@ describe("hover integration", function()
     assert.equals("error", entry.level)
     assert.truthy(entry.msg:find("hola", 1, true))
     vim.api.nvim_win_close(other_win, true)
+  end)
+
+  it("forgets the source and the result when the geometry is refused", function()
+    local bufnr = open_buffer({ "Hello world" })
+    local source_win = vim.api.nvim_get_current_win()
+    -- `compute()` gives up when it cannot run inside the source window.
+    local original_in_source = hover.in_source
+    hover.in_source = function()
+      return false
+    end
+
+    local ok, shown = pcall(
+      ui_mod.show,
+      { buf = bufnr, win = source_win, sr = 0, er = 0, lines = { "Hello world" } },
+      { translated = "hola", display_lines = { "hola" }, meta = {}, opts = {} }
+    )
+    hover.in_source = original_in_source
+
+    assert.is_true(ok, tostring(shown))
+    assert.is_false(shown)
+    local state = hover.debug()
+    assert.equals("hidden", state.state)
+    assert.is_nil(state.source)
+    assert.is_nil(state.result)
+    assert.equals("source window changed", state.last_error)
+    assert.equals(0, count_floats())
+  end)
+
+  it("forgets the source and the result when the window constructor refuses", function()
+    local bufnr = open_buffer({ "Hello world" })
+    local source_win = vim.api.nvim_get_current_win()
+    local snacks = ui_mod.require_snacks()
+    local original_win = snacks.win
+    snacks.win = function()
+      return nil
+    end
+
+    local ok, shown = pcall(
+      ui_mod.show,
+      { buf = bufnr, win = source_win, sr = 0, er = 0, lines = { "Hello world" } },
+      { translated = "hola", display_lines = { "hola" }, meta = {}, opts = {} }
+    )
+    snacks.win = original_win
+
+    assert.is_true(ok, tostring(shown))
+    assert.is_false(shown)
+    local state = hover.debug()
+    assert.equals("hidden", state.state)
+    assert.is_nil(state.source)
+    assert.is_nil(state.result)
+    assert.equals("window not created", state.last_error)
+    assert.equals(0, count_floats())
+  end)
+
+  it("re-arms the unknown ui.win key warning on reset", function()
+    local warns = 0
+    local function notify()
+      warns = warns + 1
+    end
+
+    metaphrast._reset_for_tests()
+    config.warn_unknown_win_keys({ bogus = true }, notify)
+    assert.equals(1, warns)
+    -- Warn-once: the same key stays silent for the rest of the session.
+    config.warn_unknown_win_keys({ bogus = true }, notify)
+    assert.equals(1, warns)
+
+    -- The reset re-arms it, so one spec's warning cannot silence the next.
+    metaphrast._reset_for_tests()
+    config.warn_unknown_win_keys({ bogus = true }, notify)
+    assert.equals(2, warns)
   end)
   it("AC2: opens one non-toast float anchored under the translated range", function()
     local bufnr = open_buffer({ "line one", "line two", "line three", "line four" })
