@@ -1,4 +1,3 @@
----@diagnostic disable: undefined-global
 local M = {}
 
 ---Compute the display width of a string (handles multibyte/CJK correctly).

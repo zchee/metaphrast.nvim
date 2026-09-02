@@ -1,4 +1,3 @@
----@diagnostic disable: undefined-global
 local util = require("metaphrast.util")
 
 ---@class MetaphrastCommentParts
