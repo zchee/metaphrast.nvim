@@ -851,7 +851,8 @@ describe("blockwise replace", function()
     end)
     local bufnr = block_buffer({ "    // alpha beta gamma", "ab" }, "// %s", 1, 4, 2, 22)
 
-    local translated = metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+    local translated, applied, reason =
+      metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
 
     -- `'>` lands before `'<` on the short last row, so both slices are empty
     -- and the payload would be newlines only. That is nothing to translate, so
@@ -859,6 +860,10 @@ describe("blockwise replace", function()
     assert.equals("", translated)
     assert.is_nil(captured())
     assert.same({ "    // alpha beta gamma", "ab" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    -- A requested write-back that never happened is not a success: `nil` would
+    -- read as "no write-back was requested" and let callers report one.
+    assert.is_false(applied)
+    assert.equals("metaphrast: nothing to translate in the selection", reason)
   end)
 
   it("AC4b: keeps the clamped-empty region empty on a multibyte row", function()
@@ -869,13 +874,16 @@ describe("blockwise replace", function()
     local original = { "  日本語アイウ", "ab" }
     local bufnr = block_buffer(original, "// %s", 1, 4, 2, 22)
 
-    local translated = metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+    local translated, applied, reason =
+      metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
 
     -- Snapping `cstart` back and `cend` forward around the same codepoint would
     -- reopen the emptied region and delete that character from the row.
     assert.equals("", translated)
     assert.is_nil(captured())
     assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    assert.is_false(applied)
+    assert.equals("metaphrast: nothing to translate in the selection", reason)
     local cstart, cend = metaphrast._block_columns(original[1], 4, 2)
     assert.equals(cstart, cend)
   end)

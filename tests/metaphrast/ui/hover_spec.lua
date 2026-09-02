@@ -1011,6 +1011,30 @@ describe("hover integration", function()
     assert.equals(ui_mod.PROGRESS_ID, newest_entry().id)
   end)
 
+  it("AC17: warns that a blank selection had nothing to translate instead of reporting a success", function()
+    -- `'>` lands before `'<` on the short last row, so every row of the block
+    -- clamps to nothing and the provider is never called.
+    local original = { "    // alpha beta gamma", "ab" }
+    local bufnr = open_buffer(original, "// %s")
+    set_visual_marks(bufnr, 1, 4, 2, 22)
+    local before = stamp(progress_entry())
+
+    metaphrast.command({ fargs = { "es" }, bang = true, visual_mode = "\22" })
+
+    assert.is_true(vim.wait(1000, function()
+      local current = progress_entry()
+      return stamp(current) > before and current.msg ~= "Translating..."
+    end))
+    local entry = progress_entry()
+    -- A no-op is not a failure, so it warns; only a refused write-back errors.
+    assert.equals("warn", entry.level)
+    assert.equals("metaphrast: nothing to translate in the selection", entry.msg)
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    -- Nothing was translated, so nothing may claim it was.
+    assert.equals(ui_mod.PROGRESS_ID, newest_entry().id)
+    assert.is_nil(entry.msg:find("Translated via", 1, true))
+  end)
+
   it("returns applied = true from the sync API when the source is unchanged", function()
     local bufnr = open_buffer({ "Hello world" })
     local translated_before, applied_before = metaphrast.translate_range(bufnr, 0, 1, { target_lang = "es" })

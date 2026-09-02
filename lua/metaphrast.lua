@@ -642,13 +642,19 @@ function M.translate_range(bufnr, start_line, end_line, opts)
   return rendered or translated, applied, reason
 end
 
+-- Reported when the selection holds nothing translatable. It travels the same
+-- `applied == false` + reason channel a refused write-back uses, so callers do
+-- not mistake the skip for a success; `command()` tells the two apart by this
+-- exact string and warns rather than errors, because a no-op is not a failure.
+local NOTHING_TO_TRANSLATE = "metaphrast: nothing to translate in the selection"
+
 ---Translate visually selected text.
 ---@param bufnr integer|nil
 ---@param mode string Visual mode: "v", "V", or "\22".
 ---@param opts table|nil
 ---@return string translated
----@return boolean|nil applied False when a requested write-back was refused.
----@return string|nil reason Why the write-back was refused.
+---@return boolean|nil applied False when the write-back was refused or the selection was blank.
+---@return string|nil reason Why nothing was written.
 function M.translate_selection(bufnr, mode, opts)
   local buffer = resolve_buffer(bufnr)
   local sr, sc, er, ec = get_visual_positions(buffer, mode)
@@ -659,7 +665,7 @@ function M.translate_selection(bufnr, mode, opts)
   -- `""`; sending it would bill a provider for nothing and write the reply
   -- into a line the user never selected.
   if analysis.text:match("^%s*$") then
-    return ""
+    return "", false, NOTHING_TO_TRANSLATE
   end
 
   local translated, meta = M.translate(analysis.text, opts)
@@ -684,7 +690,8 @@ function M.translate_selection_async(bufnr, mode, opts, callbacks)
   if analysis.text:match("^%s*$") then
     if cb.on_success then
       vim.schedule(function()
-        cb.on_success("", { cached = false, provider = M.config.provider, icon = M.config.icon })
+        local meta = { cached = false, provider = M.config.provider, icon = M.config.icon }
+        cb.on_success("", meta, false, NOTHING_TO_TRANSLATE)
       end)
     end
     return
@@ -808,7 +815,9 @@ function M.command(opts)
     local callbacks = {
       on_success = function(_, meta, applied, reason)
         if applied == false then
-          done(reason, "error")
+          -- A blank selection is a no-op, not a failure: nothing was refused
+          -- and nothing was lost, so it warns where a refused write errors.
+          done(reason, reason == NOTHING_TO_TRANSLATE and "warn" or "error")
           return
         end
         local provider = meta and meta.provider or M.config.provider
