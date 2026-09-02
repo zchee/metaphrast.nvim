@@ -16,6 +16,13 @@ vim.opt.rtp:append(".")
 vim.opt.rtp:append(plenary_dir)
 vim.opt.rtp:append(snacks_dir)
 
+-- The e2e job clones render-markdown.nvim and points RENDER_MARKDOWN_DIR at it,
+-- so the post-render height correction can be asserted against a real renderer.
+local render_markdown_dir = os.getenv("RENDER_MARKDOWN_DIR")
+if render_markdown_dir and vim.fn.isdirectory(render_markdown_dir) == 1 then
+  vim.opt.rtp:append(render_markdown_dir)
+end
+
 local ok, snacks = pcall(require, "snacks")
 if not ok then
   error("tests: snacks.nvim could not be loaded from " .. snacks_dir .. ": " .. tostring(snacks))
@@ -32,3 +39,10 @@ require("plenary.busted")
 -- plenary spawns specs with --noplugin, so the user commands and <Plug> mapping
 -- only exist when the plugin file is sourced explicitly.
 vim.cmd("runtime plugin/metaphrast.lua")
+if render_markdown_dir and vim.fn.isdirectory(render_markdown_dir) == 1 then
+  local rm_ok, render_markdown = pcall(require, "render-markdown")
+  if not rm_ok then
+    error("tests: render-markdown.nvim could not be loaded from " .. render_markdown_dir)
+  end
+  render_markdown.setup({})
+end

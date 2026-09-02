@@ -588,6 +588,120 @@ describe("hover integration", function()
     return calls
   end
 
+  local ui_mod = require("metaphrast.ui")
+  local original_select = vim.ui.select
+  local original_columns = vim.o.columns
+
+  ---Screen row (1-based) of a 1-based source line, after the mandatory redraw.
+  local function screen_row(win, line)
+    vim.cmd("redraw")
+    return vim.fn.screenpos(win, line, 1).row
+  end
+
+  local function outer_pos(win)
+    vim.cmd("redraw")
+    return vim.api.nvim_win_get_position(win)
+  end
+
+  local function translate_range_open(bufnr, target_lang, first_line, last_line)
+    local done = false
+    metaphrast.translate_range_async(bufnr, first_line, last_line, {
+      target_lang = target_lang,
+      show_window = true,
+      replace = false,
+    }, {
+      on_success = function()
+        done = true
+      end,
+      on_error = function(err)
+        done = true
+        error(err)
+      end,
+    })
+    assert.is_true(vim.wait(1000, function()
+      return done
+    end))
+    assert.equals("shown", hover.debug().state)
+  end
+
+  local function notifier_api()
+    return ui_mod.require_snacks().notifier
+  end
+
+  ---Notifier entries are updated in place, so every history assertion compares
+  ---this stamp before and after the action instead of counting entries.
+  local function stamp(entry)
+    return entry and (entry.updated or entry.added) or 0
+  end
+
+  local function progress_entry()
+    local found
+    for _, entry in ipairs(notifier_api().get_history()) do
+      if entry.id == ui_mod.PROGRESS_ID then
+        found = entry
+      end
+    end
+    return found
+  end
+
+  local function newest_entry()
+    local newest
+    for _, entry in ipairs(notifier_api().get_history()) do
+      if not newest or stamp(entry) >= stamp(newest) then
+        newest = entry
+      end
+    end
+    return newest
+  end
+
+  ---Put the cursor on the last visible line of the source window and translate
+  ---that line, so the hover has no room below and flips above it.
+  local function open_above_case()
+    local buf_lines = {}
+    for i = 1, 200 do
+      buf_lines[i] = "// comment " .. i
+    end
+    local bufnr = open_buffer(buf_lines, "// %s")
+    local win = vim.api.nvim_get_current_win()
+    local last = vim.api.nvim_win_get_height(win)
+    vim.api.nvim_win_set_cursor(win, { last, 0 })
+    vim.cmd("redraw")
+    assert.equals(last, vim.fn.winline())
+
+    translate_range_open(bufnr, "es", last - 1, last)
+    assert.is_false(hover.debug().geometry.below)
+    return bufnr, win, last
+  end
+
+  ---Our own hover window, told apart from the notifier's toasts (which the
+  ---notifier renders on its own timer, from whatever window is current).
+  local function is_hover_window(win)
+    local wo = win.opts and win.opts.wo
+    return type(wo) == "table"
+      and type(wo.winhighlight) == "string"
+      and wo.winhighlight:find("MetaphrastHoverBorder", 1, true) ~= nil
+  end
+
+  ---Record every snacks.win show/update on the hover with the window that was
+  ---current at the time, so the `in_source` discipline can be asserted
+  ---(acceptance 16).
+  local function spy_on_window_writes()
+    local win_class = ui_mod.require_snacks().win
+    local calls = {}
+    local originals = { show = win_class.show, update = win_class.update }
+    for _, name in ipairs({ "show", "update" }) do
+      win_class[name] = function(self, ...)
+        if is_hover_window(self) then
+          calls[#calls + 1] = { fn = name, current = vim.api.nvim_get_current_win() }
+        end
+        return originals[name](self, ...)
+      end
+    end
+    return calls, function()
+      win_class.show, win_class.update = originals.show, originals.update
+    end
+  end
+
   before_each(function()
     metaphrast._reset_for_tests()
     metaphrast.setup({ provider = "echo" })
@@ -596,6 +710,8 @@ describe("hover integration", function()
   after_each(function()
     vim.fn.mode = original_mode
     vim.api.nvim_feedkeys = original_feedkeys
+    vim.ui.select = original_select
+    vim.o.columns = original_columns
     hover._reset_for_tests()
   end)
 
@@ -632,7 +748,7 @@ describe("hover integration", function()
     assert.equals("┌", win_config.border[1][1] or win_config.border[1])
   end)
 
-  it("pads through virtual lines and the statuscolumn, never the text", function()
+  it("AC6: pads through virtual lines and the statuscolumn, never the text", function()
     metaphrast._reset_for_tests()
     metaphrast.setup({ provider = "echo", ui = { win = { padding = { top = 1, bottom = 1, left = 2, right = 2 } } } })
     local bufnr = open_buffer({ "Hello" })
@@ -647,7 +763,7 @@ describe("hover integration", function()
     assert.equals(3, vim.api.nvim_win_get_height(state.win))
   end)
 
-  it("closes on CursorMoved in the source buffer", function()
+  it("AC3: closes on CursorMoved in the source buffer", function()
     local bufnr = open_buffer({ "Hello world", "second" })
     translate_open(bufnr, "es")
 
@@ -661,7 +777,7 @@ describe("hover integration", function()
     assert.is_false(hover.is_open_for(bufnr))
   end)
 
-  it("closes on InsertEnter in the source buffer", function()
+  it("AC3: closes on InsertEnter in the source buffer", function()
     local bufnr = open_buffer({ "Hello world" })
     translate_open(bufnr, "es")
 
@@ -719,7 +835,7 @@ describe("hover integration", function()
     assert.equals(1, #calls)
   end)
 
-  it("focuses on the second invocation without moving and closes with q", function()
+  it("AC4: focuses on the second invocation without moving and closes with q", function()
     local bufnr = open_buffer({ "Hello world" })
     translate_open(bufnr, "es")
     local state = hover.debug()
@@ -749,7 +865,7 @@ describe("hover integration", function()
     assert.equals(0, count_floats())
   end)
 
-  it("replaces the source through r, keeping comment leaders", function()
+  it("AC5: replaces the source through r, keeping comment leaders", function()
     local bufnr = open_buffer({ "// hello there", "code()" }, "// %s")
     translate_open(bufnr, "es")
     metaphrast.hover()
@@ -763,7 +879,7 @@ describe("hover integration", function()
     assert.equals("code()", buf_lines[2])
   end)
 
-  it("refuses to replace when the source changed and stays focused", function()
+  it("AC5: refuses to replace when the source changed and stays focused", function()
     local bufnr = open_buffer({ "Hello world" })
     translate_open(bufnr, "es")
     metaphrast.hover()
@@ -775,7 +891,7 @@ describe("hover integration", function()
     assert.equals("Hello edited", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
   end)
 
-  it("toggles the original text with o and yanks only the translation", function()
+  it("AC5: toggles the original text with o and yanks only the translation", function()
     local bufnr = open_buffer({ "// hello there" }, "// %s")
     translate_open(bufnr, "es")
     metaphrast.hover()
@@ -794,7 +910,7 @@ describe("hover integration", function()
     assert.same({ "hello there [echo]->es" }, vim.api.nvim_buf_get_lines(state.buf, 0, -1, false))
   end)
 
-  it("refuses to open when the source window is not current", function()
+  it("AC15: refuses to open when the source window is not current", function()
     local bufnr = open_buffer({ "Hello world" })
     local source_win = vim.api.nvim_get_current_win()
     vim.cmd("vsplit")
@@ -817,5 +933,381 @@ describe("hover integration", function()
     assert.equals("error", entry.level)
     assert.truthy(entry.msg:find("hola", 1, true))
     vim.api.nvim_win_close(other_win, true)
+  end)
+  it("AC2: opens one non-toast float anchored under the translated range", function()
+    local bufnr = open_buffer({ "line one", "line two", "line three", "line four" })
+    local source_win = vim.api.nvim_get_current_win()
+
+    translate_range_open(bufnr, "ja", 0, 3)
+
+    local state = hover.debug()
+    assert.equals(1, count_floats())
+    local win_config = vim.api.nvim_win_get_config(state.win)
+    assert.equals("win", win_config.relative)
+    assert.equals(source_win, win_config.win)
+    assert.equals(source_win, vim.api.nvim_get_current_win())
+    -- Outer top-left is 0-based, screenpos is 1-based; the anchor is the last
+    -- line of the range, offset by the configured row.
+    assert.equals(screen_row(source_win, 3) - 1 + metaphrast.config.ui.win.row, outer_pos(state.win)[1])
+  end)
+
+  it("AC9: themes the border through winhighlight on the live window", function()
+    local bufnr = open_buffer({ "Hello world" })
+
+    translate_open(bufnr, "es")
+
+    local state = hover.debug()
+    assert.truthy(vim.wo[state.win].winhighlight:find("FloatBorder:MetaphrastHoverBorder", 1, true))
+    for _, group in ipairs({ "MetaphrastHoverBorder", "MetaphrastHoverTitle", "MetaphrastHoverChip" }) do
+      assert.is_true(next(vim.api.nvim_get_hl(0, { name = group })) ~= nil, group .. " is undefined")
+    end
+  end)
+
+  it("AC4: leaves a pending provider pick alone", function()
+    local bufnr = open_buffer({ "Hello world" })
+    translate_open(bufnr, "es")
+    metaphrast.hover()
+    vim.ui.select = function() end -- never calls back: the pick stays open
+
+    assert.is_true(hover.request_provider())
+    assert.equals("pending", hover.debug().state)
+
+    metaphrast.hover()
+    assert.equals("pending", hover.debug().state)
+    assert.is_false(hover.focus())
+    assert.equals("pending", hover.debug().state)
+  end)
+
+  it("AC5: yanks the translation into the unnamed and clipboard registers", function()
+    local bufnr = open_buffer({ "// hello there" }, "// %s")
+    translate_open(bufnr, "es")
+    metaphrast.hover()
+    vim.fn.setreg('"', "")
+
+    assert.is_true(hover.yank())
+
+    local expected = hover.debug().result.translated
+    assert.equals(expected, vim.fn.getreg('"'))
+    if vim.fn.has("clipboard") == 1 then
+      assert.equals(expected, vim.fn.getreg("+"))
+    end
+  end)
+
+  it("AC5: grows downward on o and restores the window when toggled back", function()
+    local bufnr = open_buffer({ "// hello there" }, "// %s")
+    translate_open(bufnr, "es")
+    metaphrast.hover()
+    local state = hover.debug()
+    local pos = outer_pos(state.win)
+    local height = vim.api.nvim_win_get_height(state.win)
+    local original_count = 1
+
+    assert.is_true(hover.toggle_original())
+
+    assert.equals(height + original_count + 1, vim.api.nvim_win_get_height(state.win))
+    assert.same(pos, outer_pos(state.win))
+
+    assert.is_true(hover.toggle_original())
+
+    assert.equals(height, vim.api.nvim_win_get_height(state.win))
+    assert.same(pos, outer_pos(state.win))
+    assert.same({ "hello there [echo]->es" }, vim.api.nvim_buf_get_lines(state.buf, 0, -1, false))
+  end)
+
+  it("AC5: grows upward on o above the range, keeping the bottom border fixed", function()
+    local _, source_win, _ = open_above_case()
+    metaphrast.hover()
+    local state = hover.debug()
+    local pos = outer_pos(state.win)
+    local height = vim.api.nvim_win_get_height(state.win)
+    assert.equals(source_win, vim.api.nvim_win_get_config(state.win).win)
+
+    assert.is_true(hover.toggle_original())
+
+    local grown = vim.api.nvim_win_get_height(state.win)
+    local moved = outer_pos(state.win)
+    assert.equals(height + 1 + 1, grown)
+    assert.equals(pos[1] - (1 + 1), moved[1])
+    assert.equals(pos[1] + height, moved[1] + grown)
+  end)
+
+  it("AC7: places the bottom border above the anchor line in the above case", function()
+    local _, source_win, last = open_above_case()
+
+    local state = hover.debug()
+    local pos = outer_pos(state.win)
+    local height = vim.api.nvim_win_get_height(state.win)
+    local border_rows = 2
+
+    assert.equals(screen_row(source_win, last) - 1 - (metaphrast.config.ui.win.row - 1), pos[1] + height + border_rows)
+  end)
+
+  it("AC6: keeps the buffer text equal to display_lines and chrome in extmarks", function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({
+      provider = "echo",
+      ui = { win = { padding = { top = 1, bottom = 1, left = 3, right = 1 } } },
+    })
+    local bufnr = open_buffer({ "// hello there" }, "// %s")
+
+    translate_open(bufnr, "es")
+
+    local state = hover.debug()
+    assert.same(state.result.display_lines, vim.api.nvim_buf_get_lines(state.buf, 0, -1, false))
+    assert.equals(string.rep(" ", 3), vim.wo[state.win].statuscolumn)
+    assert.equals(2, #vim.api.nvim_buf_get_extmarks(state.buf, theme.ns_layout, 0, -1, {}))
+    assert.equals(0, #vim.api.nvim_buf_get_extmarks(state.buf, theme.ns_hl, 0, -1, {}))
+
+    metaphrast.hover()
+    assert.is_true(hover.toggle_original())
+
+    -- The separator is one more layout extmark; the original block is one
+    -- highlight extmark spanning it.
+    assert.equals(3, #vim.api.nvim_buf_get_extmarks(state.buf, theme.ns_layout, 0, -1, {}))
+    assert.equals(1, #vim.api.nvim_buf_get_extmarks(state.buf, theme.ns_hl, 0, -1, {}))
+  end)
+
+  it("AC8: advances the progress toast in place on success", function()
+    local bufnr = open_buffer({ "Hello world" })
+    local before = stamp(progress_entry())
+
+    metaphrast.command({ range = 1, line1 = 1, line2 = 1, fargs = { "es" }, bang = false })
+
+    -- The same id carries "Translating..." first, so wait for the result to
+    -- replace it in place rather than for the first update.
+    assert.is_true(vim.wait(1000, function()
+      local current = progress_entry()
+      return stamp(current) > before and current.msg ~= "Translating..."
+    end))
+    local entry = progress_entry()
+    assert.equals("info", entry.level)
+    assert.truthy(entry.msg:find("echo", 1, true))
+    assert.equals(bufnr, vim.api.nvim_get_current_buf())
+  end)
+
+  it("AC8: reports a failed translation on the same progress id", function()
+    -- setup() re-registers the built-in providers, so the stub is registered
+    -- after it and selected by writing the resolved config directly.
+    metaphrast.register_provider("boom", {
+      translate = function()
+        error("provider exploded")
+      end,
+    })
+    metaphrast.config.provider = "boom"
+    open_buffer({ "Hello world" })
+    local before = stamp(progress_entry())
+
+    metaphrast.command({ range = 1, line1 = 1, line2 = 1, fargs = { "es" }, bang = false })
+
+    assert.is_true(vim.wait(1000, function()
+      local current = progress_entry()
+      return stamp(current) > before and current.msg ~= "Translating..."
+    end))
+    local entry = progress_entry()
+    assert.equals("error", entry.level)
+    assert.truthy(entry.msg:find("provider exploded", 1, true))
+    assert.equals("hidden", hover.debug().state)
+  end)
+
+  it("AC10: honors the user's real ui.win table", function()
+    vim.o.columns = 200
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo", ui = { win = USER_WIN } })
+    local bufnr = open_buffer({ "// hello there", "code()" }, "// %s")
+    local source_win = vim.api.nvim_get_current_win()
+
+    translate_open(bufnr, "es")
+
+    local state = hover.debug()
+    local win_config = vim.api.nvim_win_get_config(state.win)
+    assert.equals(150, win_config.width)
+    assert.equals(8, #win_config.border)
+    for i, cell in ipairs(win_config.border) do
+      assert.equals(USER_WIN.border[i], type(cell) == "table" and cell[1] or cell)
+    end
+    assert.is_false(vim.wo[state.win].wrap)
+    assert.equals(string.rep(" ", 5), vim.wo[state.win].statuscolumn)
+    assert.equals(2, #vim.api.nvim_buf_get_extmarks(state.buf, theme.ns_layout, 0, -1, {}))
+    assert.equals(#state.result.display_lines + 2, vim.api.nvim_win_get_height(state.win))
+    assert.equals(screen_row(source_win, 1) - 1 + 2, outer_pos(state.win)[1])
+
+    vim.o.columns = original_columns
+  end)
+
+  it("AC13: retranslates through p and keeps the hover focused", function()
+    metaphrast.register_provider("stub", {
+      translate = function(_, payload)
+        return payload.text .. " [stub]"
+      end,
+    })
+    local bufnr = open_buffer({ "// hello there" }, "// %s")
+    translate_open(bufnr, "es")
+    metaphrast.hover()
+    local hover_win = hover.debug().win
+    vim.ui.select = function(items, _, on_choice)
+      assert.is_false(vim.tbl_contains(items, "echo"))
+      on_choice("stub")
+    end
+
+    assert.is_true(hover.request_provider())
+
+    assert.is_true(vim.wait(1000, function()
+      return hover.debug().state == "focused"
+    end))
+    local state = hover.debug()
+    assert.equals("stub", state.result.meta.provider)
+    assert.same({ "hello there [stub]" }, state.result.display_lines)
+    assert.equals(state.win, vim.api.nvim_get_current_win())
+    assert.equals("echo", metaphrast.config.provider)
+
+    assert.is_true(hover.replace())
+    assert.equals("// hello there [stub]", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
+    assert.is_not.equals(hover_win, nil)
+  end)
+
+  it("AC13: reports an unconfigured provider and stays focused", function()
+    local bufnr = open_buffer({ "Hello world" })
+    translate_open(bufnr, "es")
+    metaphrast.hover()
+    local before = stamp(newest_entry())
+    vim.ui.select = function(_, _, on_choice)
+      on_choice("deepl")
+    end
+
+    assert.is_true(hover.request_provider())
+
+    assert.is_true(vim.wait(1000, function()
+      return hover.debug().state == "focused"
+    end))
+    local entry = newest_entry()
+    assert.is_true(stamp(entry) > before)
+    assert.equals("error", entry.level)
+    assert.truthy(entry.msg:lower():find("deepl", 1, true))
+    assert.equals(hover.debug().win, vim.api.nvim_get_current_win())
+  end)
+
+  it("AC13: re-enters the hover when the provider pick is cancelled", function()
+    local bufnr = open_buffer({ "Hello world" })
+    local source_win = vim.api.nvim_get_current_win()
+    translate_open(bufnr, "es")
+    metaphrast.hover()
+    vim.ui.select = function(_, _, on_choice)
+      -- A floating picker restores the source window before calling back.
+      vim.api.nvim_set_current_win(source_win)
+      on_choice(nil)
+    end
+
+    assert.is_true(hover.request_provider())
+
+    assert.is_true(vim.wait(1000, function()
+      return hover.debug().state == "focused"
+    end))
+    assert.equals(hover.debug().win, vim.api.nvim_get_current_win())
+  end)
+
+  it("AC15: refuses to open when the source window was closed", function()
+    local bufnr = open_buffer({ "Hello world" })
+    vim.cmd("vsplit")
+    local doomed = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_close(doomed, true)
+    local before = stamp(newest_entry())
+
+    local shown = ui_mod.show(
+      { buf = bufnr, win = doomed, sr = 0, er = 0, lines = { "Hello world" } },
+      { translated = "hola", display_lines = { "hola" }, meta = {}, opts = {} }
+    )
+
+    assert.is_false(shown)
+    assert.equals("hidden", hover.debug().state)
+    assert.equals(0, count_floats())
+    local entry = newest_entry()
+    assert.is_true(stamp(entry) > before)
+    assert.equals("error", entry.level)
+    assert.truthy(entry.msg:find("hola", 1, true))
+  end)
+
+  it("AC15: refuses to open when the source window shows another buffer", function()
+    local bufnr = open_buffer({ "Hello world" })
+    local source_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(source_win, vim.api.nvim_create_buf(false, true))
+    local before = stamp(newest_entry())
+
+    local shown = ui_mod.show(
+      { buf = bufnr, win = source_win, sr = 0, er = 0, lines = { "Hello world" } },
+      { translated = "hola", display_lines = { "hola" }, meta = {}, opts = {} }
+    )
+
+    assert.is_false(shown)
+    assert.equals("hidden", hover.debug().state)
+    assert.equals(0, count_floats())
+    local entry = newest_entry()
+    assert.is_true(stamp(entry) > before)
+    assert.equals("error", entry.level)
+    assert.truthy(entry.msg:find("hola", 1, true))
+  end)
+
+  it("AC15: closes an open hover when the source window swaps buffers", function()
+    local bufnr = open_buffer({ "Hello world" })
+    translate_open(bufnr, "es")
+
+    vim.cmd("enew")
+
+    assert.equals("hidden", hover.debug().state)
+    assert.equals(1, hover.debug().close_count)
+    assert.equals(0, count_floats())
+  end)
+
+  it("AC14: still fits its content after render-markdown renders it", function()
+    if vim.env.RENDER_MARKDOWN ~= "1" then
+      return -- only the e2e job puts render-markdown.nvim on the runtimepath
+    end
+    assert.is_true(pcall(require, "render-markdown"))
+    local bufnr = open_buffer({
+      "# Heading",
+      "",
+      "- one item",
+      "- another item",
+    })
+
+    translate_range_open(bufnr, "es", 0, 4)
+
+    local state = hover.debug()
+    assert.equals("markdown", vim.bo[state.buf].filetype)
+    -- Conceal and virtual lines change the rendered height after the window was
+    -- sized; the post-render correction has to catch up with them.
+    vim.wait(300)
+    assert.is_true(
+      vim.api.nvim_win_text_height(state.win, {}).all <= vim.api.nvim_win_get_height(state.win),
+      "rendered height overflows the window"
+    )
+  end)
+
+  it("AC16: writes the window only while the source window is current", function()
+    local bufnr = open_buffer({ "// hello there" }, "// %s")
+    local source_win = vim.api.nvim_get_current_win()
+    local calls, restore = spy_on_window_writes()
+
+    local ok, err = pcall(function()
+      translate_open(bufnr, "es")
+      assert.is_true(#calls > 0)
+
+      metaphrast.hover()
+      assert.is_true(hover.toggle_original())
+      -- Let the scheduled and deferred post-render corrections run.
+      vim.wait(200)
+
+      local state = hover.debug()
+      local pos = outer_pos(state.win)
+      vim.api.nvim_exec_autocmds("VimResized", { modeline = false })
+      vim.wait(50)
+      assert.same(pos, outer_pos(state.win))
+
+      for _, call in ipairs(calls) do
+        assert.equals(source_win, call.current, call.fn .. " ran outside the source window")
+      end
+    end)
+
+    restore()
+    assert.is_true(ok, tostring(err))
   end)
 end)
