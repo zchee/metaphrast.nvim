@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
   "runtime.version": "LuaJIT",
   "runtime.path": ["lua/?.lua", "lua/?/init.lua"],
-  "workspace.library": ["$VIMRUNTIME/lua", "${3rd}/luv/library", "${3rd}/busted/library", "/tmp/plenary.nvim/lua"],
+  "workspace.library": ["$VIMRUNTIME/lua", "${3rd}/luv/library", "${3rd}/busted/library", "/tmp/plenary.nvim/lua", "/tmp/snacks.nvim/lua"],
   "workspace.checkThirdParty": false,
   "diagnostics.globals": ["vim"]
 }
