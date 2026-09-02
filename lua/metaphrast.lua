@@ -500,8 +500,10 @@ function M.apply_result(source, translated)
 end
 
 ---Deliver a finished translation: replace the source, show the hover, or
----echo it, depending on `opts`. A refused write-back is not reported here;
----the caller finishes its own progress toast with `reason`.
+---echo it, depending on `opts`. A refused write-back is toasted here so the
+---public API paths stay diagnosable; `opts.quiet` suppresses that toast for
+---callers that report the reason themselves (`command()` finishes its own
+---progress toast with it, and a second toast would double-report).
 ---@param source MetaphrastHoverSource
 ---@param translated string
 ---@param meta table|nil
@@ -519,6 +521,10 @@ local function deliver(source, translated, meta, analysis, opts)
   local rendered = table.concat(result.display_lines, "\n")
   if should_replace then
     local applied, reason = try_apply(source, translated)
+    if applied == false and not (opts and opts.quiet) then
+      ---@cast reason string
+      ui.notify(reason, "error")
+    end
     return analysis.layout and translated or rendered, applied, reason
   end
   if opts and opts.show_window then
@@ -668,13 +674,19 @@ end
 
 ---Run a translation from `:MetaphrastTranslate` or `hover()`.
 ---Without a range and with a hover already open for the buffer it focuses
----that hover, unless the bang asks for a write-back. `opts.replace`, when
----given, overrides both the bang and `config.replace`.
+---that hover; the bang instead closes it and writes back. `opts.replace`,
+---when given, overrides both the bang and `config.replace`.
 ---@param opts table Command opts (`range`, `line1`, `line2`, `fargs`, `bang`, `visual_mode`) plus `replace`.
 function M.command(opts)
-  if (opts.range or 0) == 0 and not opts.bang and hover.is_open_for(0) then
-    hover.focus()
-    return
+  if (opts.range or 0) == 0 and hover.is_open_for(0) then
+    if not opts.bang then
+      hover.focus()
+      return
+    end
+    -- The bang overwrites the very lines the open hover translated, so its
+    -- source is about to go stale; close it rather than leave it showing a
+    -- translation of text that is no longer in the buffer.
+    hover.close()
   end
   local args = opts.fargs or {}
   local source
@@ -705,6 +717,8 @@ function M.command(opts)
       target_lang = target_lang,
       replace = replace,
       show_window = not replace,
+      -- A refusal is reported on the progress id below, not as a second toast.
+      quiet = true,
     }
     local callbacks = {
       on_success = function(_, meta, applied, reason)
