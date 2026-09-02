@@ -15,6 +15,7 @@ Translate text inside Neovim through multiple backends with caching and simple c
 ## Backends
 
 - Google Translate/Cloud
+- Google Cloud Translation LLM (`google_llm`)
 - DeepL
 - OpenAI
 - Google Gemini
@@ -78,6 +79,15 @@ require("metaphrast").setup({
         or vim.fn.expand("~/.config/gcloud/application_default_credentials.json"),
       gcp_project_id = "your-billing-or-quota-project", -- optional override for x-goog-user-project
     },
+    google_llm = {
+      -- Same ADC-first auth as `google`; falls back to an API key.
+      api_key = os.getenv("GOOGLE_TRANSLATE_KEY") or os.getenv("GOOGLE_API_KEY"),
+      adc_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        or vim.fn.expand("~/.config/gcloud/application_default_credentials.json"),
+      gcp_project_id = os.getenv("GOOGLE_CLOUD_PROJECT"), -- required: the model is a project resource
+      location = "us-central1", -- or "global"
+      model = "general/translation-llm",
+    },
     deepl = {
       api_key = os.getenv("DEEPL_AUTH_KEY"),
     },
@@ -100,8 +110,8 @@ require("metaphrast").setup({
 
 If a configured provider is missing credentials, `setup()` warns and falls back to the built-in `echo` provider so you can test locally without making paid calls. A later request for a provider that is still unusable (for example after `p` in the hover) fails with an error toast instead of silently switching.
 
-For the `google` backend, prefer a Cloud Translation-specific key in
-`GOOGLE_TRANSLATE_KEY`. `GOOGLE_API_KEY` remains a fallback, but it is often
+For the `google` and `google_llm` backends, prefer a Cloud Translation-specific
+key in `GOOGLE_TRANSLATE_KEY`. `GOOGLE_API_KEY` remains a fallback, but it is often
 shared with other Google services in local setups and may be restricted in ways
 that block Cloud Translation.
 
@@ -122,6 +132,20 @@ Set `providers.google.gcp_project_id` when you want to force a specific
 `x-goog-user-project` header. This value overrides any `quota_project_id`
 embedded in the ADC file and is useful when billing or quota should be charged
 to a different Google Cloud project.
+
+The `google_llm` backend calls Cloud Translation's `general/translation-llm`
+model instead of the NMT model. With ADC it uses Advanced v3
+(`:translateText`); with an API key it uses Basic v2, which accepts the same
+model parameter. Either way a project id is required, from
+`providers.google_llm.gcp_project_id`, `GOOGLE_CLOUD_PROJECT`/`GCLOUD_PROJECT`,
+or the ADC file's `quota_project_id`, because the model is addressed as
+`projects/<project>/locations/<location>/models/general/translation-llm`.
+
+The `location` must be one the Translation LLM supports — `us-central1` or
+`global` — and the request's parent location must match the location inside
+that model resource. Metaphrast builds both from `providers.google_llm.location`
+so they cannot drift; a mismatch is rejected by the API as HTTP 400
+INVALID_ARGUMENT.
 
 OpenRouter upstream model providers can rate-limit independently from your
 OpenRouter account. When `providers.openrouter.retry_on_upstream_rate_limit` is
@@ -235,9 +259,10 @@ With no hover open, `hover()` translates the current line, so one key both trans
 
 Every key is configurable under `ui.hover.keys`; set one to `false` to disable it.
 
-## Cost guidance (2025-12)
+## Cost guidance (2026-09)
 
 - Google Cloud Translate v2 text: ~$20 per million chars (first 500k chars/month free).  
+- Google Cloud Translation LLM: ~$10 per million input chars + ~$10 per million output chars (billed on both directions, unlike NMT).  
 - DeepL API Pro: ~$25 per million chars (+base fee).  
 - OpenAI gpt-4o-mini: ~$0.15/M input tokens + $0.60/M output tokens (≈0.00075 USD per ~1k chars round trip).  
 - Gemini 2.5 Flash: ~$0.30/M input tokens + $2.50/M output tokens.  

@@ -5,6 +5,8 @@ describe("config.defaults", function()
     vim.env.GOOGLE_API_KEY = nil
     vim.env.GOOGLE_TRANSLATE_KEY = nil
     vim.env.GOOGLE_APPLICATION_CREDENTIALS = nil
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
   end)
 
   it("returns a table", function()
@@ -45,6 +47,7 @@ describe("config.defaults", function()
     assert.is_table(d.providers)
     assert.is_table(d.providers.echo)
     assert.is_table(d.providers.google)
+    assert.is_table(d.providers.google_llm)
     assert.is_table(d.providers.deepl)
     assert.is_table(d.providers.openai)
     assert.is_table(d.providers.gemini)
@@ -141,6 +144,25 @@ describe("config.defaults", function()
     })
 
     assert.equals("explicit-project", merged.providers.google.gcp_project_id)
+  end)
+
+  it("defaults google_llm to the Translation LLM model in us-central1", function()
+    local d = config.defaults()
+
+    assert.equals("general/translation-llm", d.providers.google_llm.model)
+    assert.equals("us-central1", d.providers.google_llm.location)
+    assert.equals("https://translation.googleapis.com/v3", d.providers.google_llm.base_url)
+    assert.equals("https://translation.googleapis.com/language/translate/v2", d.providers.google_llm.basic_base_url)
+    assert.equals(10.0, d.providers.google_llm.input_per_million)
+    assert.equals(10.0, d.providers.google_llm.output_per_million)
+  end)
+
+  it("reads the google_llm project id from the gcloud environment", function()
+    vim.env.GOOGLE_CLOUD_PROJECT = "env-project"
+
+    local d = config.defaults()
+
+    assert.equals("env-project", d.providers.google_llm.gcp_project_id)
   end)
 
   it("enables OpenRouter upstream rate-limit fallback by default", function()
