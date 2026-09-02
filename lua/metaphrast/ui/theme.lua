@@ -46,8 +46,11 @@ local THEMES = {
   teal = vim.tbl_extend("force", LINK_THEME, TEAL_OVERRIDES),
 }
 
--- Order of the footer key hints, with the label shown next to each key.
-local FOOTER_ORDER = {
+---Hover key names in footer order, with the label shown next to each key.
+---Each name is also the snacks action the key maps to, so hover.lua reads the
+---key list from here rather than keeping its own copy.
+---@type { name: string, desc: string }[]
+M.FOOTER_ORDER = {
   { name = "close", desc = "close" },
   { name = "yank", desc = "yank" },
   { name = "replace", desc = "replace" },
@@ -140,7 +143,7 @@ function M.footer_chips(keys, focused)
   end
   keys = keys or {}
   local chips = {}
-  for _, entry in ipairs(FOOTER_ORDER) do
+  for _, entry in ipairs(M.FOOTER_ORDER) do
     local key = keys[entry.name]
     if type(key) == "table" then
       key = key[1]

@@ -54,9 +54,6 @@ local M = {}
 ---@field inner_width integer Requested width before the screen cap.
 ---@field wrap_width integer Columns available to text (`width - padding.left`).
 
--- Hover key names in footer order; each maps to a snacks action of the same name.
-local KEY_NAMES = { "close", "yank", "replace", "original", "provider", "help" }
-
 -- Rows/columns drawn by snacks' partial border presets.
 local PARTIAL_BORDERS = {
   left = { 0, 1 },
@@ -410,22 +407,24 @@ function M.snacks_opts(cfg, geometry, chrome)
 end
 
 ---Translate `ui.hover.keys` into the snacks `keys` table.
----Every lhs maps to the action of the same name; `false` disables the entry.
----`q` is disabled up front so snacks' own `q = "close"` default never leaks in.
+---Every lhs maps to the action of the same name (the footer order from
+---`theme.FOOTER_ORDER`); `false` disables the entry. `q` is disabled up
+---front so snacks' own `q = "close"` default never leaks in.
 ---@param keys MetaphrastHoverKeys|table<string, string|string[]|false>|nil
 ---@return table<string, string|false> keys
 function M.resolve_keys(keys)
   ---@type table<string, string|false>
   local out = { q = false }
   keys = keys or {}
-  for _, name in ipairs(KEY_NAMES) do
+  for _, entry in ipairs(theme.FOOTER_ORDER) do
+    local name = entry.name
     local lhs = keys[name]
     if type(lhs) == "string" and lhs ~= "" then
       out[lhs] = name
     elseif type(lhs) == "table" then
-      for _, entry in ipairs(lhs) do
-        if type(entry) == "string" and entry ~= "" then
-          out[entry] = name
+      for _, alias in ipairs(lhs) do
+        if type(alias) == "string" and alias ~= "" then
+          out[alias] = name
         end
       end
     end

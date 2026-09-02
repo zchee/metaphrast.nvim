@@ -186,3 +186,13 @@ describe("theme.ensure_highlights", function()
     assert.equals("FloatBorder", vim.api.nvim_get_hl(0, { name = "MetaphrastHoverBorder" }).link)
   end)
 end)
+
+describe("theme.FOOTER_ORDER", function()
+  it("lists every hover action once, in footer order", function()
+    local names = vim.tbl_map(function(entry)
+      return entry.name
+    end, theme.FOOTER_ORDER)
+
+    assert.same({ "close", "yank", "replace", "original", "provider", "help" }, names)
+  end)
+end)
