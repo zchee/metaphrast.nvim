@@ -218,7 +218,7 @@ No keymap is bound by default. Map `<Plug>(MetaphrastHover)` yourself:
 vim.keymap.set("n", "<leader>k", "<Plug>(MetaphrastHover)")
 ```
 
-With no hover open, `hover()` translates the current line, so one key both translates and focuses.
+With no hover open, `hover()` translates the current line, so one key both translates and focuses. It never writes into the buffer, even with `replace = true` in `setup()`; use `r` inside the hover or `:MetaphrastTranslate!` for that. `:MetaphrastTranslate!` without a range always translates and writes back, even while a hover is open.
 
 ### Keymaps inside the focused hover
 
@@ -228,7 +228,7 @@ With no hover open, `hover()` translates the current line, so one key both trans
 | `y` | Yank the translation into `"`, and into `+` when Neovim has clipboard support. Only the translation is yanked — never the original text, never the padding. |
 | `r` | Replace the source range with the translation, re-applying the comment leaders, then close. Refused with an error toast when the source text changed since it was translated. |
 | `o` | Toggle the original text (対訳) above the translation in the same window. |
-| `p` | Pick another provider and retranslate; the result replaces the hover contents. |
+| `p` | Pick another provider and retranslate; the result replaces the hover contents. When the retranslation fails, the progress toast is hidden, the error arrives as a separate toast, and the hover is focused again. Cancelling the picker also refocuses the hover. |
 | `?` | Toggle the key-hint help window. |
 
 Every key is configurable under `ui.hover.keys`; set one to `false` to disable it.

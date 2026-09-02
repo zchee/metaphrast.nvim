@@ -24,7 +24,7 @@ form above, even for a single file.
 
 ## Naming
 
-The Lua namespace, user commands, highlight groups, cache directory, vimdoc, and README all use `metaphrast` (renamed from `metafrastis` on 2026-09-02). Never reintroduce `metafrastis`; `rg -i metafrastis` outside `.omc/drafts` must stay empty.
+The Lua namespace, user commands, highlight groups, cache directory, vimdoc, and README all use `metaphrast` (renamed from `metafrastis` on 2026-09-02). Never reintroduce `metafrastis`; `rg -i metafrastis lua/ plugin/ tests/ doc/ README.md` must stay empty (this rule and the CHANGELOG rename note are the only places the old name may appear).
 
 ## Target platform
 

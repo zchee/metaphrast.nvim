@@ -6,5 +6,5 @@
 -- An uncaught error under -l exits non-zero and writes the message to stderr;
 -- the same error inside -c would still exit 0.
 --
--- Until the dependency gate lands (implementation step 6) this exits 0.
+-- With the gate in place this exits 1 and names snacks.nvim on stderr.
 require("metaphrast").setup({})
