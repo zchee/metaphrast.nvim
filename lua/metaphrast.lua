@@ -824,6 +824,7 @@ end
 -- Test helper
 function M._reset_for_tests()
   M.config = cfg.defaults()
+  cfg._reset_for_tests()
   register_builtin()
   M.http = http_builder.build(M.config.http)
   M.http_async = http_builder.build_async(M.config.http)

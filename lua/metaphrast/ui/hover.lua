@@ -811,6 +811,8 @@ function M.show(source, result, opts)
 
   local geometry = compute()
   if not geometry then
+    -- Nothing opened: leave no source/result behind for `debug()` to report.
+    instance.source, instance.result, instance.cfg, instance.content = nil, nil, nil, nil
     instance.last_error = "source window changed"
     ui().notify("metaphrast: source window changed; translation: " .. (result.translated or ""), "error")
     return false
@@ -836,6 +838,7 @@ function M.show(source, result, opts)
     win = snacks.win(win_opts)
   end)
   if not win then
+    instance.source, instance.result, instance.cfg, instance.content = nil, nil, nil, nil
     instance.last_error = "window not created"
     return false
   end
