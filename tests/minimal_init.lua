@@ -1,3 +1,14 @@
+---Abort the whole Neovim process with a message on stderr.
+---`error()` here would only unwind this file: the harness then runs
+---`PlenaryBustedDirectory` as an unknown command (E492) and headless Neovim
+---hangs with nothing to quit on, so CI burns its job timeout instead of
+---reporting the failure.
+---@param msg string
+local function die(msg)
+  io.stderr:write(msg .. "\n")
+  os.exit(1)
+end
+
 local plenary_dir = os.getenv("PLENARY_DIR") or "/tmp/plenary.nvim"
 if vim.fn.isdirectory(plenary_dir) == 0 then
   vim.fn.system({ "git", "clone", "https://github.com/nvim-lua/plenary.nvim", plenary_dir })
@@ -26,7 +37,7 @@ if not snacks_at_ref() then
   vim.fn.system({ "git", "-C", snacks_dir, "fetch", "--quiet", "origin" })
   vim.fn.system({ "git", "-C", snacks_dir, "checkout", "--quiet", snacks_ref })
   if not snacks_at_ref() then
-    error(string.format("tests: %s is not at SNACKS_REF %s after fetch and checkout", snacks_dir, snacks_ref))
+    die(string.format("tests: %s is not at SNACKS_REF %s after fetch and checkout", snacks_dir, snacks_ref))
   end
 end
 
@@ -43,7 +54,7 @@ end
 
 local ok, snacks = pcall(require, "snacks")
 if not ok then
-  error("tests: snacks.nvim could not be loaded from " .. snacks_dir .. ": " .. tostring(snacks))
+  die("tests: snacks.nvim could not be loaded from " .. snacks_dir .. ": " .. tostring(snacks))
 end
 -- Keep vim.notify / vim.ui.input untouched so specs observe the notifier
 -- through its own history and never block on a prompt.
@@ -60,7 +71,7 @@ vim.cmd("runtime plugin/metaphrast.lua")
 if render_markdown_dir and vim.fn.isdirectory(render_markdown_dir) == 1 then
   local rm_ok, render_markdown = pcall(require, "render-markdown")
   if not rm_ok then
-    error("tests: render-markdown.nvim could not be loaded from " .. render_markdown_dir)
+    die("tests: render-markdown.nvim could not be loaded from " .. render_markdown_dir)
   end
   render_markdown.setup({})
 end
