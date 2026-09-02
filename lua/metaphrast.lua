@@ -692,7 +692,7 @@ end
 
 ---Translate visually selected text asynchronously.
 ---`on_success` receives `applied = false` and the reason when a requested
----write-back was refused.
+---write-back was refused or when the selection contained nothing to translate.
 ---@param bufnr integer|nil
 ---@param mode string Visual mode: "v", "V", or "\22".
 ---@param opts table|nil

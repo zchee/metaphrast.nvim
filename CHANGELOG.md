@@ -44,10 +44,12 @@ is `v1.0.0`.
 - `translate_range`, `translate_selection` and `translate_selection_async` now
   report the write-back: after a `replace` they return (or yield to
   `on_success`) `applied` and `reason` alongside the translation. `applied` is
-  `true` when the source was written, `false` when the write-back was refused
-  because the source text changed since it was translated, and `nil` when no
-  write-back was requested. A refused write-back raises an error notification
-  instead of writing; `:MetaphrastTranslate` reports it on its progress toast.
+  `true` when the source was written, `false` with a `reason` when nothing was
+  written (the source text changed since it was translated, the rendered
+  result exceeded `max_inserted_lines`, or the selection was blank), and `nil`
+  when no write-back was requested and the translation was shown instead. A
+  refused write-back raises an error notification; a blank selection raises a
+  warning; `:MetaphrastTranslate` reports both on its progress toast.
 - `ui.hover` and `ui.notify` configuration sections, plus `ui.win` bounds
   (`min_width`, `max_width`, `min_height`, `max_height`), `winblend` and
   `backdrop`. Unknown `ui.win` keys are reported once by name.
