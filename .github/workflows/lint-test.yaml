@@ -2,6 +2,11 @@
 on: [push, pull_request]
 name: lint-test
 
+env:
+  # snacks.nvim is a hard runtime dependency and the test suite drives the real
+  # thing, so it is pinned: the window option surface is what the specs assert.
+  SNACKS_REF: 882c996cf28183f4d63640de0b4c02ec886d01f2
+
 jobs:
   stylua:
     name: stylua
@@ -12,7 +17,7 @@ jobs:
         with:
           version: latest
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --color always --check lua
+          args: --color always --check lua plugin tests
 
   luacheck:
     name: luacheck
@@ -38,7 +43,51 @@ jobs:
           neovim: true
           version: ${{ matrix.nvim-versions }}
 
+      - name: cache test dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ runner.temp }}/plenary.nvim
+            ${{ runner.temp }}/snacks.nvim
+          key: nvim-deps-${{ matrix.os }}-plenary-master-snacks-${{ env.SNACKS_REF }}
+
       - name: run tests
         run: make test
         env:
           PLENARY_DIR: ${{ runner.temp }}/plenary.nvim
+          SNACKS_DIR: ${{ runner.temp }}/snacks.nvim
+
+  e2e-render-markdown:
+    name: e2e (render-markdown)
+    runs-on: ubuntu-26.04
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7
+
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: nightly
+
+      - name: cache test dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ runner.temp }}/plenary.nvim
+            ${{ runner.temp }}/snacks.nvim
+          key: nvim-deps-ubuntu-26.04-plenary-master-snacks-${{ env.SNACKS_REF }}
+
+      - name: clone render-markdown.nvim
+        run: |
+          git clone --depth 1 https://github.com/MeanderingProgrammer/render-markdown.nvim \
+            "${RUNNER_TEMP}/render-markdown.nvim"
+
+      - name: run tests
+        run: make test
+        env:
+          PLENARY_DIR: ${{ runner.temp }}/plenary.nvim
+          SNACKS_DIR: ${{ runner.temp }}/snacks.nvim
+          RENDER_MARKDOWN_DIR: ${{ runner.temp }}/render-markdown.nvim
+          # Enables the hover specs that assert the window still fits its
+          # content after render-markdown adds conceal and virtual lines.
+          RENDER_MARKDOWN: '1'
