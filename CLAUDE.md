@@ -2,61 +2,60 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Quick Reference
+## Commands
 
 ```bash
-make test                    # Run all tests (headless Neovim + Plenary)
-stylua lua/ plugin/          # Format all Lua code
-stylua --check lua/          # Check formatting (CI mode)
+make test          # headless Neovim + plenary.busted over tests/
+make fmt           # stylua .
+make lint          # luacheck lua/ plugin/ tests/
+stylua --check lua # what CI runs (only lua/ is checked in CI)
 ```
 
-Tests auto-clone plenary.nvim to `/tmp/plenary.nvim`. No other setup needed.
+Tests git-clone plenary.nvim into `$PLENARY_DIR` (default `/tmp/plenary.nvim`) on first run. Run a single spec with:
 
-## What This Plugin Does
+```bash
+nvim --headless --noplugin -u tests/minimal_init.lua -c "PlenaryBustedFile tests/metaphrast/textflow_spec.lua"
+```
 
-**metafrastis.nvim** translates text in Neovim via pluggable backends (Google Translate, DeepL, OpenAI, Gemini, OpenRouter) with two-tier caching (memory + disk), cost guards, and optional Snacks.nvim UI.
+## Naming (in migration)
 
-## Architecture
+The repo is `metaphrast.nvim`, but the Lua namespace, user commands, vimdoc, and README still say `metaphrast`. The plan is to migrate everything to `metaphrast`, but do not rename anything unless the user asks; renames touch the LuaRocks package name, user commands, and the generated vimdoc together. Until then, keep new code consistent with the `metaphrast` names around it. Never mix both names inside one module.
 
-Entry points:
-- `lua/metafrastis.lua` — public API: `setup()`, `translate()`, `translate_async()`, `translate_range()`, `register_provider()`
-- `plugin/metafrastis.lua` — user commands: `MetafrastisTranslate`, `MetafrastisTranslateUI`, `MetafrastisCacheClear`
+## Target platform
 
-Translation flow: `command → comment.strip_lines → cache.get → registry.translate → cache.put → apply output (buffer replace / ui.show_window / echo)`
+- Neovim nightly only. Do not add compatibility guards (`if vim.system`, `vim.uv or vim.loop`); remove them when you touch code that has them.
+- `curl` is a hard runtime dependency (`http.lua` shells out to it). plenary.nvim and snacks.nvim are optional and must stay behind `pcall(require, ...)` with the existing fallbacks.
 
-Key modules under `lua/metafrastis/`:
-- `providers/` — each provider exports `translate()`, `validate()`, `estimate_cost()`; registry in `providers/init.lua`
-- `http.lua` — curl abstraction with plenary.job (async) or vim.system (sync) backends
-- `cache.lua` — FIFO memory tier + disk files under `stdpath('cache')/metafrastis`; TTL-aware
-- `ui.lua` — Snacks.win integration with fallbacks to `vim.notify`/`vim.ui.input`/echo
-- `comment.lua` — strips and reapplies comment leaders based on buffer `commentstring`
-- `config.lua` — defaults with env-var resolution for API keys; pricing data
+## Docs are generated
 
-## Coding Conventions
+`doc/metaphrast.txt` is regenerated from `README.md` by `.github/workflows/docs.yaml` (panvimdoc) on push to main. Edit `README.md`, never the `.txt`.
 
-- **See AGENTS.md** for full style guide, provider implementation template, and testing patterns
-- StyLua enforced: 2-space indent, 120-char lines, double quotes, Unix line endings (`.stylua.toml`)
-- Module pattern: `local M = {} ... return M`
-- All public functions require LuaLS annotations (`---@param`, `---@return`, `---@class`)
-- Naming: `snake_case` everywhere; prefix internal helpers with `_`
-- Commit style: Conventional Commits — `type(scope): description`
+Known README vs code mismatches (code is canonical until the user says otherwise):
+- DeepL key env var: code reads `DEEPL_AUTH_KEY`; README says `DEEPL_API_KEY`.
+- Gemini key env var: code reads `GOOGLE_API_KEY` then `GEMINI_API_KEY`; README says `GOOGLE_GENAI_KEY`.
+- `:MetaphrastTranslateUI` is documented but does not exist; its behavior lives in `:MetaphrastTranslate` (async, popup unless `!`).
+
+## Style
+
+- StyLua enforced (`.stylua.toml`): 2-space indent, 120 columns, double quotes, `call_parentheses = "Always"`, and `sort_requires` (top-of-file `require` blocks are alphabetized; do not hand-order them).
+- Module pattern `local M = {} ... return M`; LuaCATS annotations (`---@class`, `---@param`, `---@return`) on every public function; doc comments end with a period.
+- Stateful modules expose `_reset_for_tests()`; add one when you introduce module-level state.
+- Commit messages: Conventional Commits, `type(scope): description` (e.g. `feat(textflow): wrap CJK output`).
 
 ## Testing
 
-- Framework: Plenary.nvim Busted (`describe`/`it`/`before_each`)
-- Test files: `tests/metafrastis/<module>_spec.lua`
-- Use `_reset_for_tests()` in `before_each` to clear module state
-- Mock snacks via `package.loaded["snacks"]`; clean in `after_each`
-- Use `echo` provider to avoid network calls
-- CI runs on Ubuntu/macOS/Windows × Neovim stable/nightly
+- Framework is plenary.busted; specs live in `tests/metaphrast/<module>_spec.lua`.
+- No network in tests: use `setup({ provider = "echo" })`, or pass a fake `_http` function to a provider's `translate()`.
+- Mock snacks with `package.loaded["snacks"] = {...}` (or `= false` to test fallbacks) and clear it in `after_each`.
+- Call `_reset_for_tests()` on `metaphrast`, `metaphrast.ui`, and `metaphrast.providers.google` in `before_each` as needed.
+- Keep `cache.ttl <= 5` in cache tests so entries stay memory-only and never write to disk.
 
-## Dependencies
+## Architecture notes that are easy to get wrong
 
-| Module | Required | Notes |
-|--------|----------|-------|
-| plenary.nvim | For tests; optional at runtime | HTTP backend, test framework |
-| snacks.nvim | Optional | UI windows/notifications; graceful fallback when absent |
-
-## Context Files
-
-Read `.agents/llms/*.xml` for Neovim/Snacks/Plenary API context when working on this codebase.
+- Translation flow: `command → comment.strip_lines → textflow.segment → cache.get → registry.translate → cache.put → textflow.wrap / reapply leaders → buffer replace or ui popup`.
+- `textflow.segment` merges consecutive comment lines into one paragraph so soft-wrapped sentences translate as a unit; blank comment lines and list markers (`- `, `* `, `1. `) break paragraphs; non-comment lines pass through untranslated.
+- Widths are always display columns (`vim.fn.strdisplaywidth`), never `#s`. CJK characters (width >= 2) are their own wrap units.
+- If a provider returns a different paragraph count than sent, the whole output is placed at the first paragraph slot rather than dropped. Single-source-line paragraphs are not re-wrapped.
+- Cost guard runs before the cache lookup, so an over-budget request errors even on a cache hit.
+- Provider errors must stay diagnosable: distinct messages for curl failure (`res.code ~= 0`, include stderr) and HTTP >= 400 (include body).
+- Price changes: bump `pricing_last_review` and the provider price fields in `lua/metaphrast/config.lua`.
