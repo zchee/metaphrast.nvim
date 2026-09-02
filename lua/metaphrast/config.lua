@@ -15,12 +15,17 @@
 ---@field api_key string?
 ---@field adc_path string?
 ---@field gcp_project_id string?
+---@field location string?
 ---@field model string?
 ---@field base_url string?
+---@field basic_base_url string?
 ---@field glossary_id string?
 ---@field referer string?
 ---@field fallback_models string[]?
 ---@field retry_on_upstream_rate_limit boolean?
+---@field price_per_million_chars number?
+---@field input_per_million number?
+---@field output_per_million number?
 
 ---@class MetaphrastWinPadding
 ---@field top integer Blank rows above the body (rendered as virtual lines).
@@ -128,7 +133,7 @@ function M.defaults()
       memory_max_entries = 512,
       memory_skip_disk_ttl = 5,
     },
-    pricing_last_review = "2025-12-03",
+    pricing_last_review = "2026-09-03",
     http = {
       timeout = 20000, -- milliseconds
       backend = "plenary",
@@ -145,6 +150,18 @@ function M.defaults()
         model = "v2",
         base_url = "https://translation.googleapis.com/language/translate/v2",
         price_per_million_chars = 20.0,
+      },
+      google_llm = {
+        api_key = vim.env.GOOGLE_TRANSLATE_KEY or vim.env.GOOGLE_API_KEY,
+        adc_path = vim.env.GOOGLE_APPLICATION_CREDENTIALS
+          or vim.fn.expand("~/.config/gcloud/application_default_credentials.json"),
+        gcp_project_id = vim.env.GOOGLE_CLOUD_PROJECT or vim.env.GCLOUD_PROJECT,
+        location = "us-central1",
+        model = "general/translation-llm",
+        base_url = "https://translation.googleapis.com/v3",
+        basic_base_url = "https://translation.googleapis.com/language/translate/v2",
+        input_per_million = 10.0,
+        output_per_million = 10.0,
       },
       deepl = {
         api_key = vim.env.DEEPL_AUTH_KEY,

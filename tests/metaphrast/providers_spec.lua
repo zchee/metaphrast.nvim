@@ -4,6 +4,7 @@ local deepl = require("metaphrast.providers.deepl")
 local echo = require("metaphrast.providers.echo")
 local gemini = require("metaphrast.providers.gemini")
 local google = require("metaphrast.providers.google")
+local google_llm = require("metaphrast.providers.google_llm")
 local openai = require("metaphrast.providers.openai")
 local openrouter = require("metaphrast.providers.openrouter")
 
@@ -378,6 +379,291 @@ describe("google provider", function()
     assert.has_error(function()
       google.translate(mock_http, payload)
     end)
+  end)
+
+  it("caches the ADC access token and drops it on reset", function()
+    vim.fn.writefile({
+      vim.json.encode({
+        type = "authorized_user",
+        client_id = "cid",
+        client_secret = "secret",
+        refresh_token = "refresh",
+        quota_project_id = "quota-project",
+      }),
+    }, adc_path)
+
+    local token_calls = 0
+    local mock_http = function(_, url)
+      if url == "https://oauth2.googleapis.com/token" then
+        token_calls = token_calls + 1
+        return {
+          code = 0,
+          stdout = vim.json.encode({ access_token = "adc-access-token", expires_in = 3600 }),
+        }
+      end
+      return {
+        code = 0,
+        stdout = vim.json.encode({ data = { translations = { { translatedText = "translated" } } } }),
+      }
+    end
+    local payload = make_payload("hello", "google", { adc_path = adc_path, base_url = "https://example.com" })
+
+    google.translate(mock_http, payload)
+    google.translate(mock_http, payload)
+    assert.equals(1, token_calls)
+
+    google._reset_for_tests()
+    google.translate(mock_http, payload)
+    assert.equals(2, token_calls)
+  end)
+end)
+
+-- ── google_llm ──────────────────────────────────────────────────────────
+
+describe("google_llm provider", function()
+  local adc_path
+
+  ---Find the first header carrying the given prefix.
+  ---@param headers string[]
+  ---@param prefix string
+  ---@return string|nil
+  local function find_header(headers, prefix)
+    for _, header in ipairs(headers) do
+      if header:sub(1, #prefix) == prefix then
+        return header
+      end
+    end
+    return nil
+  end
+
+  ---Write an authorized-user ADC file at `adc_path`.
+  ---@param quota_project_id string|nil
+  local function write_adc(quota_project_id)
+    vim.fn.writefile({
+      vim.json.encode({
+        type = "authorized_user",
+        client_id = "cid",
+        client_secret = "secret",
+        refresh_token = "refresh",
+        quota_project_id = quota_project_id,
+      }),
+    }, adc_path)
+  end
+
+  ---Build a fake HTTP function answering the OAuth token endpoint first and
+  ---the translateText call second, recording both into `calls`.
+  ---@param calls table[]
+  ---@param response table
+  ---@return fun(method: string, url: string, opts: table): table
+  local function adc_http(calls, response)
+    return function(method, url, opts)
+      calls[#calls + 1] = { method = method, url = url, opts = opts }
+      if url == "https://oauth2.googleapis.com/token" then
+        return {
+          code = 0,
+          stdout = vim.json.encode({ access_token = "adc-access-token", expires_in = 3600 }),
+        }
+      end
+      return response
+    end
+  end
+
+  local v3_ok = {
+    code = 0,
+    http_status = 200,
+    stdout = vim.json.encode({
+      translations = { { translatedText = "hola", model = "general/translation-llm" } },
+    }),
+  }
+
+  before_each(function()
+    google_llm._reset_for_tests()
+    adc_path = vim.fn.tempname()
+  end)
+
+  after_each(function()
+    google_llm._reset_for_tests()
+    if adc_path and vim.uv.fs_stat(adc_path) then
+      vim.fn.delete(adc_path)
+    end
+  end)
+
+  it("has correct name", function()
+    assert.equals("google_llm", google_llm.name)
+  end)
+
+  it("rejects a missing api_key when no ADC file exists", function()
+    local ok, err = google_llm.validate({ adc_path = adc_path, gcp_project_id = "proj" })
+    assert.is_false(ok)
+    assert.is_truthy(tostring(err):find("api_key", 1, true))
+  end)
+
+  it("rejects ADC credentials without a project id", function()
+    write_adc(nil)
+
+    local ok, err = google_llm.validate({ adc_path = adc_path })
+
+    assert.is_false(ok)
+    assert.is_truthy(tostring(err):find("gcp_project_id", 1, true))
+  end)
+
+  it("accepts ADC credentials carrying a quota_project_id", function()
+    write_adc("quota-project")
+
+    assert.is_true(google_llm.validate({ adc_path = adc_path }))
+  end)
+
+  it("accepts an api_key with an explicit gcp_project_id", function()
+    assert.is_true(google_llm.validate({ api_key = "k", adc_path = adc_path, gcp_project_id = "proj" }))
+  end)
+
+  it("translates through Advanced v3 with ADC credentials", function()
+    write_adc("quota-project")
+
+    local calls = {}
+    local payload = make_payload("hello", "google_llm", { adc_path = adc_path, gcp_project_id = "proj" })
+    local result = google_llm.translate(adc_http(calls, v3_ok), payload)
+
+    assert.equals("hola", result)
+    assert.equals(2, #calls)
+    assert.equals("https://oauth2.googleapis.com/token", calls[1].url)
+    assert.equals("POST", calls[2].method)
+    assert.equals(
+      "https://translation.googleapis.com/v3/projects/proj/locations/us-central1:translateText",
+      calls[2].url
+    )
+    assert.equals("Authorization: Bearer adc-access-token", find_header(calls[2].opts.headers, "Authorization:"))
+    assert.equals("x-goog-user-project: proj", find_header(calls[2].opts.headers, "x-goog-user-project:"))
+
+    local body = vim.json.decode(calls[2].opts.data)
+    assert.same({ "hello" }, body.contents)
+    assert.equals("text/plain", body.mimeType)
+    assert.equals("en", body.targetLanguageCode)
+    assert.equals("ja", body.sourceLanguageCode)
+    assert.equals("projects/proj/locations/us-central1/models/general/translation-llm", body.model)
+  end)
+
+  it("omits the source language when it is unset", function()
+    write_adc("quota-project")
+
+    local calls = {}
+    local payload = make_payload("hello", "google_llm", { adc_path = adc_path, gcp_project_id = "proj" })
+    payload.source_lang = nil
+    google_llm.translate(adc_http(calls, v3_ok), payload)
+
+    local body = vim.json.decode(calls[2].opts.data)
+    assert.is_nil(body.sourceLanguageCode)
+  end)
+
+  it("honors a non-default location in both the URL and the model path", function()
+    write_adc("quota-project")
+
+    local calls = {}
+    local payload = make_payload("hello", "google_llm", {
+      adc_path = adc_path,
+      gcp_project_id = "proj",
+      location = "global",
+    })
+    google_llm.translate(adc_http(calls, v3_ok), payload)
+
+    assert.equals("https://translation.googleapis.com/v3/projects/proj/locations/global:translateText", calls[2].url)
+    local body = vim.json.decode(calls[2].opts.data)
+    assert.equals("projects/proj/locations/global/models/general/translation-llm", body.model)
+  end)
+
+  it("translates through Basic v2 with an api_key", function()
+    local captured_url, captured_opts
+    local mock_http = function(_, url, opts)
+      captured_url = url
+      captured_opts = opts
+      return {
+        code = 0,
+        http_status = 200,
+        stdout = vim.json.encode({ data = { translations = { { translatedText = "hola-basic" } } } }),
+      }
+    end
+    local payload = make_payload("hello", "google_llm", {
+      api_key = "k",
+      adc_path = adc_path,
+      gcp_project_id = "proj",
+    })
+    local result = google_llm.translate(mock_http, payload)
+
+    assert.equals("hola-basic", result)
+    assert.truthy(captured_url:find("language/translate/v2?key=k", 1, true))
+    local body = vim.json.decode(captured_opts.data)
+    assert.same({ "hello" }, body.q)
+    assert.equals("en", body.target)
+    assert.equals("ja", body.source)
+    assert.equals("projects/proj/locations/us-central1/models/general/translation-llm", body.model)
+  end)
+
+  it("errors on non-zero exit code with the curl stderr", function()
+    local mock_http = function()
+      return { code = 7, stderr = "connection refused" }
+    end
+    local payload = make_payload("hi", "google_llm", {
+      api_key = "k",
+      adc_path = adc_path,
+      gcp_project_id = "proj",
+    })
+
+    local ok, err = pcall(google_llm.translate, mock_http, payload)
+
+    assert.is_false(ok)
+    assert.is_truthy(tostring(err):find("connection refused", 1, true))
+    assert.is_nil(tostring(err):find("HTTP", 1, true))
+  end)
+
+  it("errors on HTTP 400 with the response body", function()
+    local mock_http = function()
+      return {
+        code = 0,
+        http_status = 400,
+        stdout = [[{"error":{"message":"Location must match the model location"}}]],
+      }
+    end
+    local payload = make_payload("hi", "google_llm", {
+      api_key = "k",
+      adc_path = adc_path,
+      gcp_project_id = "proj",
+    })
+
+    local ok, err = pcall(google_llm.translate, mock_http, payload)
+
+    assert.is_false(ok)
+    assert.is_truthy(tostring(err):find("HTTP 400", 1, true))
+    assert.is_truthy(tostring(err):find("Location must match the model location", 1, true))
+  end)
+
+  it("errors on an unexpected payload", function()
+    local mock_http = function()
+      return { code = 0, http_status = 200, stdout = "{}" }
+    end
+    local payload = make_payload("hi", "google_llm", {
+      api_key = "k",
+      adc_path = adc_path,
+      gcp_project_id = "proj",
+    })
+
+    local ok, err = pcall(google_llm.translate, mock_http, payload)
+
+    assert.is_false(ok)
+    assert.is_truthy(tostring(err):find("unexpected payload", 1, true))
+  end)
+
+  it("estimates cost from input plus estimated output characters", function()
+    local payload = make_payload(string.rep("a", 1000), "google_llm", {})
+    -- 1000 chars at $10/M input + $10/M estimated output = $0.02.
+    assert.are.near(0.02, google_llm.estimate_cost(payload), 1e-6)
+  end)
+
+  it("honors custom per-million prices", function()
+    local payload = make_payload(string.rep("a", 1000), "google_llm", {
+      input_per_million = 4.0,
+      output_per_million = 6.0,
+    })
+    assert.are.near(0.01, google_llm.estimate_cost(payload), 1e-6)
   end)
 end)
 
