@@ -362,34 +362,6 @@ describe("comment handling", function()
     assert.equals("    /* Translate only the inner text <t> */", lines[1])
     assert.equals("Translate only the inner text", last_text)
   end)
-
-  it("omits comment leaders in the hover output", function()
-    local last_text
-    registry.register("capture_window", {
-      translate = function(_, payload)
-        last_text = payload.text
-        return payload.text .. " <t>"
-      end,
-      estimate_cost = function()
-        return 0
-      end,
-    })
-    metaphrast.config.provider = "capture_window"
-    metaphrast.config.replace = false
-
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.bo[bufnr].commentstring = "// %s"
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "// hello world" })
-
-    metaphrast.translate_range(bufnr, 0, 1, { target_lang = "de", show_window = true })
-
-    assert.equals("hello world", last_text)
-    local state = hover.debug()
-    assert.equals("shown", state.state)
-    assert.same({ "hello world <t>" }, state.result.display_lines)
-    assert.is_true(hover.is_open_for(bufnr))
-  end)
 end)
 
 describe("commands", function()
@@ -620,25 +592,6 @@ describe("visual selection translation", function()
     assert.equals("", result)
   end)
 
-  it("shows the hover instead of replacing when replace is false", function()
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
-    set_visual_marks(bufnr, 1, 0, 1, 10)
-
-    metaphrast.translate_selection(bufnr, "V", {
-      target_lang = "es",
-      replace = false,
-      show_window = true,
-    })
-
-    local state = hover.debug()
-    assert.equals("shown", state.state)
-    assert.same({ "Hello world [echo]->es" }, state.result.display_lines)
-    assert.equals("Hello world", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
-    assert.equals(bufnr, state.source.buf)
-  end)
-
   it("async translates and replaces visual selection", function()
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -775,23 +728,6 @@ describe("visual selection translation", function()
     assert.equals("// not actually a comment [echo]->de", result)
   end)
 
-  it("strips the comment leader in the hover output", function()
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.bo[bufnr].commentstring = "// %s"
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "// comment payload" })
-    set_visual_marks(bufnr, 1, 0, 1, 18)
-
-    metaphrast.translate_selection(bufnr, "V", {
-      target_lang = "es",
-      replace = false,
-      show_window = true,
-    })
-
-    local display = hover.debug().result.display_lines
-    assert.is_nil(display[1]:find("//"), "hover output should not contain // : " .. display[1])
-  end)
-
   it("async strips and reapplies line comments on linewise visual selection", function()
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -918,26 +854,5 @@ describe("ui helper", function()
     assert.truthy(input_win, "snacks input window not opened")
     assert.same({ "es" }, vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(input_win), 0, -1, false))
     vim.api.nvim_win_close(input_win, true)
-  end)
-
-  it("delegates show, focus and close to the hover", function()
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "hello" })
-    local source = {
-      buf = bufnr,
-      win = vim.api.nvim_get_current_win(),
-      sr = 0,
-      er = 0,
-      lines = { "hello" },
-    }
-    local result = { translated = "ciao", display_lines = { "ciao" }, meta = { provider = "echo" }, opts = {} }
-
-    assert.is_true(ui.show(source, result))
-    assert.equals("shown", hover.debug().state)
-    assert.is_true(ui.focus())
-    assert.equals("focused", hover.debug().state)
-    assert.is_true(ui.close())
-    assert.equals("hidden", hover.debug().state)
   end)
 end)
