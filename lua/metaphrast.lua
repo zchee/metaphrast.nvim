@@ -512,15 +512,28 @@ local function try_apply(source, translated)
   end
   local out_lines = render_replacement(analyze_lines(source.lines, source.commentstring), translated)
   if is_partial_selection(source) then
-    replace_selection_text(
-      buffer,
-      source.mode,
-      source.sr,
-      source.sc,
-      source.er,
-      source.ec,
-      table.concat(out_lines, "\n")
-    )
+    local rendered = table.concat(out_lines, "\n")
+    if source.mode == "\22" or source.mode == "" then
+      -- A blockwise replacement inserts every rendered line past the block's
+      -- row count, and that count comes from the provider's reply, so bound it.
+      -- Refusing beats truncating: no content is dropped without saying so.
+      -- Counted after the join, because a rendered line can itself carry
+      -- newlines a provider put there.
+      local rendered_rows = #util.split_lines(rendered)
+      local rows = #source.lines
+      local limit = M.config.max_inserted_lines or 200
+      if rendered_rows - rows > limit then
+        return false,
+          string.format(
+            "metaphrast: translation rendered %d lines for a %d-row block, over "
+              .. "max_inserted_lines (%d); translation not applied",
+            rendered_rows,
+            rows,
+            limit
+          )
+      end
+    end
+    replace_selection_text(buffer, source.mode, source.sr, source.sc, source.er, source.ec, rendered)
   else
     vim.api.nvim_buf_set_lines(buffer, source.sr, source.er + 1, false, out_lines)
   end
@@ -616,7 +629,10 @@ function M.translate_selection(bufnr, mode, opts)
   local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec)
   local source = capture_source(buffer, mode, sr, sc, er, ec, selected_lines)
   local analysis = analyze_lines(selected_lines, source.commentstring)
-  if analysis.text == "" then
+  -- A block clamped to nothing on every row leaves only newlines, which is not
+  -- `""`; sending it would bill a provider for nothing and write the reply
+  -- into a line the user never selected.
+  if analysis.text:match("^%s*$") then
     return ""
   end
 
@@ -639,7 +655,7 @@ function M.translate_selection_async(bufnr, mode, opts, callbacks)
   local source = capture_source(buffer, mode, sr, sc, er, ec, selected_lines)
   local analysis = analyze_lines(selected_lines, source.commentstring)
   local cb = callbacks or {}
-  if analysis.text == "" then
+  if analysis.text:match("^%s*$") then
     if cb.on_success then
       vim.schedule(function()
         cb.on_success("", { cached = false, provider = M.config.provider, icon = M.config.icon })

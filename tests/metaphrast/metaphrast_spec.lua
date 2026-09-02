@@ -851,13 +851,14 @@ describe("blockwise replace", function()
     end)
     local bufnr = block_buffer({ "    // alpha beta gamma", "ab" }, "// %s", 1, 4, 2, 22)
 
-    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+    local translated = metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
 
-    -- `'>` lands before `'<` on the short last row, so both slices are empty.
-    -- No buffer bytes leak into the payload, and row 1 keeps its single indent
-    -- instead of having the region between the two columns re-emitted.
-    assert.equals("\n", captured())
-    assert.same({ "    // alpha beta gamma", "ab [cap]" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    -- `'>` lands before `'<` on the short last row, so both slices are empty
+    -- and the payload would be newlines only. That is nothing to translate, so
+    -- the provider is never reached and the buffer is left alone.
+    assert.equals("", translated)
+    assert.is_nil(captured())
+    assert.same({ "    // alpha beta gamma", "ab" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 
   it("AC5: keeps a multibyte block on codepoint boundaries", function()
@@ -921,6 +922,23 @@ describe("blockwise replace", function()
       { "  hello there", "  second line [echo]->es", "x := 1" },
       vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
     )
+  end)
+
+  it("AC10: refuses a reply that would insert more than max_inserted_lines", function()
+    capturing_provider("block_flood", function()
+      return string.rep("x\n", 300)
+    end)
+    local original = { "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }
+    local bufnr = block_buffer(original, "// %s", 1, 2, 2, 15)
+
+    local _, applied, reason = metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- The rendered line count is the provider's to choose; refusing keeps a
+    -- runaway reply out of the buffer instead of silently truncating it.
+    assert.is_false(applied)
+    assert.truthy(reason:find("max_inserted_lines", 1, true), reason)
+    assert.truthy(reason:find("200", 1, true), reason)
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 end)
 

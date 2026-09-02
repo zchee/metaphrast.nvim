@@ -75,6 +75,7 @@
 ---@field source_lang string|nil
 ---@field replace boolean
 ---@field max_chars integer
+---@field max_inserted_lines integer Cap on lines a blockwise replace may add below the block.
 ---@field cache MetaphrastCacheConfig
 ---@field http MetaphrastHttpConfig
 ---@field providers table<string, MetaphrastProviderConfig>
@@ -117,6 +118,7 @@ function M.defaults()
     source_lang = nil,
     replace = false,
     max_chars = 8000,
+    max_inserted_lines = 200,
     cache = {
       enabled = true,
       ttl = 7 * 24 * 3600,
