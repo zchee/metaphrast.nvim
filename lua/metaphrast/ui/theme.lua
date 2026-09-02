@@ -60,13 +60,20 @@ local applied_theme = nil
 
 ---Define every `MetaphrastHover*` highlight group for the given theme.
 ---All groups are registered with `default = true`, so a colorscheme or user
----override always wins. Idempotent for a theme already applied.
+---override always wins. Idempotent for a theme already applied; switching
+---to another theme clears the groups first, because `nvim_set_hl` ignores
+---`default = true` on a group that already exists.
 ---@param theme string|nil "link" (default) or "teal".
 ---@return string theme The theme actually applied.
 function M.ensure_highlights(theme)
   theme = THEMES[theme] and theme or "link"
   if applied_theme == theme then
     return theme
+  end
+  if applied_theme ~= nil then
+    for _, name in ipairs(GROUPS) do
+      vim.cmd("hi clear " .. name)
+    end
   end
   applied_theme = theme
   for _, name in ipairs(GROUPS) do

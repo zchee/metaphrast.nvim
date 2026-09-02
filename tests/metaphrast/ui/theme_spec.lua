@@ -172,4 +172,17 @@ describe("theme.ensure_highlights", function()
   it("falls back to the link theme for an unknown name", function()
     assert.equals("link", theme.ensure_highlights("nope"))
   end)
+
+  it("re-applies the groups on a runtime theme switch without a reset", function()
+    theme.ensure_highlights("link")
+    assert.not_equals(TEAL, vim.api.nvim_get_hl(0, { name = "MetaphrastHoverBorder", link = false }).fg)
+
+    assert.equals("teal", theme.ensure_highlights("teal"))
+    assert.equals(TEAL, vim.api.nvim_get_hl(0, { name = "MetaphrastHoverBorder", link = false }).fg)
+    assert.equals(TEAL, vim.api.nvim_get_hl(0, { name = "MetaphrastHoverTitle", link = false }).fg)
+
+    assert.equals("link", theme.ensure_highlights("link"))
+    assert.not_equals(TEAL, vim.api.nvim_get_hl(0, { name = "MetaphrastHoverBorder", link = false }).fg)
+    assert.equals("FloatBorder", vim.api.nvim_get_hl(0, { name = "MetaphrastHoverBorder" }).link)
+  end)
 end)
