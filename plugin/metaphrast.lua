@@ -1,4 +1,5 @@
 local metaphrast = require("metaphrast")
+local ui = require("metaphrast.ui")
 
 ---Detect charwise/blockwise visual mode when command is invoked from a visual selection.
 ---Returns the visual mode string ("v" or "\22") if the command range matches
@@ -39,5 +40,12 @@ end, {
 
 vim.api.nvim_create_user_command("MetaphrastCacheClear", function()
   metaphrast.clear_cache()
-  vim.notify("metaphrast: cache cleared", vim.log.levels.INFO)
+  ui.notify("metaphrast: cache cleared", "info")
 end, { desc = "Clear translation cache" })
+
+-- LSP-hover style entry point: translate the cursor line, or focus the hover
+-- that is already open for this buffer. `<cmd>` keeps CursorMoved from firing,
+-- which would otherwise close the hover before it can be focused.
+vim.keymap.set("n", "<Plug>(MetaphrastHover)", "<cmd>lua require('metaphrast').hover()<CR>", {
+  desc = "metaphrast: translate the cursor line or focus the open hover",
+})
