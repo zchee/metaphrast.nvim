@@ -1,9 +1,9 @@
 local uv = vim.uv or vim.loop
-local cache = require("metafrastis.cache")
+local cache = require("metaphrast.cache")
 
 ---@return string
 local function tmpdir()
-  local template = string.format("%s/metafrastis-cache-XXXXXX", uv.os_tmpdir() or "/tmp")
+  local template = string.format("%s/metaphrast-cache-XXXXXX", uv.os_tmpdir() or "/tmp")
   local dir, err = uv.fs_mkdtemp(template)
   assert(dir, err)
   return dir

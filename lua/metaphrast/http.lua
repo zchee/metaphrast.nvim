@@ -1,10 +1,10 @@
----@class MetafrastisHttp
+---@class MetaphrastHttp
 ---@field timeout integer
 ---@field backend string
 
 local M = {}
 
-local util = require("metafrastis.util")
+local util = require("metaphrast.util")
 local uv = vim.loop
 
 local function build_request_url(url, query)
@@ -106,7 +106,7 @@ local function run_with_system(args, timeout)
   }
 end
 
----@param cfg MetafrastisHttp
+---@param cfg MetaphrastHttp
 ---@return fun(method: string, url: string, opts: table): table
 function M.build(cfg)
   return function(method, url, opts)
@@ -116,13 +116,13 @@ function M.build(cfg)
       if res then
         return res
       end
-      vim.notify("metafrastis: plenary.job unavailable, falling back to curl", vim.log.levels.WARN)
+      vim.notify("metaphrast: plenary.job unavailable, falling back to curl", vim.log.levels.WARN)
     end
     return run_with_system(args, cfg.timeout or 20000)
   end
 end
 
----@param cfg MetafrastisHttp
+---@param cfg MetaphrastHttp
 ---@return fun(method: string, url: string, opts: table): table
 function M.build_async(cfg)
   local ok_job, Job = pcall(require, "plenary.job")

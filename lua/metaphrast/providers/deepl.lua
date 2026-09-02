@@ -1,4 +1,4 @@
-local util = require("metafrastis.util")
+local util = require("metaphrast.util")
 
 local M = {}
 

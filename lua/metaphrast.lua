@@ -1,21 +1,21 @@
-local cache = require("metafrastis.cache")
-local cfg = require("metafrastis.config")
-local comment = require("metafrastis.comment")
-local http_builder = require("metafrastis.http")
-local registry = require("metafrastis.providers")
-local textflow = require("metafrastis.textflow")
-local ui = require("metafrastis.ui")
-local util = require("metafrastis.util")
+local cache = require("metaphrast.cache")
+local cfg = require("metaphrast.config")
+local comment = require("metaphrast.comment")
+local http_builder = require("metaphrast.http")
+local registry = require("metaphrast.providers")
+local textflow = require("metaphrast.textflow")
+local ui = require("metaphrast.ui")
+local util = require("metaphrast.util")
 
-local provider_deepl = require("metafrastis.providers.deepl")
-local provider_echo = require("metafrastis.providers.echo")
-local provider_gemini = require("metafrastis.providers.gemini")
-local provider_google = require("metafrastis.providers.google")
-local provider_openai = require("metafrastis.providers.openai")
-local provider_openrouter = require("metafrastis.providers.openrouter")
+local provider_deepl = require("metaphrast.providers.deepl")
+local provider_echo = require("metaphrast.providers.echo")
+local provider_gemini = require("metaphrast.providers.gemini")
+local provider_google = require("metaphrast.providers.google")
+local provider_openai = require("metaphrast.providers.openai")
+local provider_openrouter = require("metaphrast.providers.openrouter")
 
----@class Metafrastis
----@field config MetafrastisConfig
+---@class Metaphrast
+---@field config MetaphrastConfig
 ---@field http fun(method: string, url: string, opts: table): table
 ---@field http_async fun(method: string, url: string, opts: table): table
 local M = {
@@ -52,7 +52,7 @@ function M.setup(opts)
   local merged = cfg.merge(opts)
   local ok, err = validate_provider(merged.provider, merged)
   if not ok then
-    vim.notify(string.format("metafrastis: %s; falling back to echo provider", err), vim.log.levels.WARN)
+    vim.notify(string.format("metaphrast: %s; falling back to echo provider", err), vim.log.levels.WARN)
     merged.provider = "echo"
   end
   M.config = merged
@@ -72,7 +72,7 @@ local function perform_translate(http_fn, text, opts)
   local provider_icon = options.icon or config_table.icon
   local ok, err = validate_provider(provider_name, config_table)
   if not ok then
-    vim.notify(string.format("metafrastis: %s; using echo provider", err), vim.log.levels.WARN)
+    vim.notify(string.format("metaphrast: %s; using echo provider", err), vim.log.levels.WARN)
     provider_name = "echo"
     config_table.provider = provider_name
   end
@@ -122,8 +122,8 @@ end
 ---to lay the translation back out. Returns nil when the lines carry no comment
 ---structure, signalling callers to use the legacy line-preserving path.
 ---@param stripped string[]
----@param info MetafrastisCommentLineInfo[]|nil
----@param parts MetafrastisCommentParts|nil
+---@param info MetaphrastCommentLineInfo[]|nil
+---@param parts MetaphrastCommentParts|nil
 ---@return string|nil input
 ---@return table|nil layout
 local function build_comment_input(stripped, info, parts)
@@ -152,7 +152,7 @@ end
 ---translation is wrapped as a single block so output is never silently dropped.
 ---@param translated string
 ---@param layout table
----@param parts MetafrastisCommentParts
+---@param parts MetaphrastCommentParts
 ---@return string[]
 local function assemble_comment_lines(translated, layout, parts)
   -- Drop any spurious trailing newline a provider appended so the paragraph
@@ -544,10 +544,10 @@ function M.command(opts)
 
   local function run_with_target(target_lang)
     if not target_lang or target_lang == "" then
-      ui.notify("metafrastis: target language required", "warn", { title = "Metafrastis" })
+      ui.notify("metaphrast: target language required", "warn", { title = "Metaphrast" })
       return
     end
-    local done = ui.progress("Translating...", { title = "Metafrastis" })
+    local done = ui.progress("Translating...", { title = "Metaphrast" })
     local translate_opts = {
       source_lang = source,
       target_lang = target_lang,
@@ -582,7 +582,7 @@ function M.command(opts)
     if value and value ~= "" then
       run_with_target(value)
     else
-      ui.notify("metafrastis: target language required", "warn", { title = "Metafrastis" })
+      ui.notify("metaphrast: target language required", "warn", { title = "Metaphrast" })
     end
   end)
 end

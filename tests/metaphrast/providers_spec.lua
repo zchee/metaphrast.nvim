@@ -1,11 +1,11 @@
-local config = require("metafrastis.config")
+local config = require("metaphrast.config")
 
-local deepl = require("metafrastis.providers.deepl")
-local echo = require("metafrastis.providers.echo")
-local gemini = require("metafrastis.providers.gemini")
-local google = require("metafrastis.providers.google")
-local openai = require("metafrastis.providers.openai")
-local openrouter = require("metafrastis.providers.openrouter")
+local deepl = require("metaphrast.providers.deepl")
+local echo = require("metaphrast.providers.echo")
+local gemini = require("metaphrast.providers.gemini")
+local google = require("metaphrast.providers.google")
+local openai = require("metaphrast.providers.openai")
+local openrouter = require("metaphrast.providers.openrouter")
 
 ---Helper: build a payload with the given text and provider config.
 ---@param text string

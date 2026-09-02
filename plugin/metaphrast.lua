@@ -1,4 +1,4 @@
-local metafrastis = require("metafrastis")
+local metaphrast = require("metaphrast")
 
 ---Detect charwise/blockwise visual mode when command is invoked from a visual selection.
 ---Returns the visual mode string ("v" or "\22") if the command range matches
@@ -24,9 +24,9 @@ local function detect_charwise_visual(opts)
 end
 
 ---@param opts vim.api.keyset.create_user_command.command_args
-vim.api.nvim_create_user_command("MetafrastisTranslate", function(opts)
+vim.api.nvim_create_user_command("MetaphrastTranslate", function(opts)
   opts.visual_mode = detect_charwise_visual(opts)
-  metafrastis.command(opts)
+  metaphrast.command(opts)
 end, {
   range = true,
   nargs = "*",
@@ -37,7 +37,7 @@ end, {
   end,
 })
 
-vim.api.nvim_create_user_command("MetafrastisCacheClear", function()
-  metafrastis.clear_cache()
-  vim.notify("metafrastis: cache cleared", vim.log.levels.INFO)
+vim.api.nvim_create_user_command("MetaphrastCacheClear", function()
+  metaphrast.clear_cache()
+  vim.notify("metaphrast: cache cleared", vim.log.levels.INFO)
 end, { desc = "Clear translation cache" })

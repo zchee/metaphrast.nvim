@@ -1,4 +1,4 @@
-local config = require("metafrastis.config")
+local config = require("metaphrast.config")
 
 describe("config.defaults", function()
   after_each(function()
@@ -83,11 +83,11 @@ describe("config.defaults", function()
   end)
 
   it("uses GOOGLE_APPLICATION_CREDENTIALS for google ADC path override", function()
-    vim.env.GOOGLE_APPLICATION_CREDENTIALS = "/tmp/metafrastis-google-adc.json"
+    vim.env.GOOGLE_APPLICATION_CREDENTIALS = "/tmp/metaphrast-google-adc.json"
 
     local d = config.defaults()
 
-    assert.equals("/tmp/metafrastis-google-adc.json", d.providers.google.adc_path)
+    assert.equals("/tmp/metaphrast-google-adc.json", d.providers.google.adc_path)
   end)
 
   it("preserves explicit google gcp_project_id through merge", function()

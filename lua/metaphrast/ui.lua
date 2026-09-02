@@ -1,9 +1,9 @@
-local util = require("metafrastis.util")
+local util = require("metaphrast.util")
 
 local M = {}
 
 local snacks_cache = nil
-local autoclose_group = vim.api.nvim_create_augroup("MetafrastisSnacksWin", { clear = true })
+local autoclose_group = vim.api.nvim_create_augroup("MetaphrastSnacksWin", { clear = true })
 local default_win_opts = {}
 local active_win = nil
 local highlights_defined = false
@@ -12,23 +12,23 @@ local highlights_defined = false
 -- bright teal; the footer hint uses a muted gray so it recedes. All groups are
 -- registered with `default = true`, so any colorscheme or user override wins.
 local highlight_defs = {
-  MetafrastisWinBorder = { fg = "#2dd4bf", ctermfg = 80, default = true },
-  MetafrastisWinTitle = { fg = "#2dd4bf", ctermfg = 80, bold = true, default = true },
-  MetafrastisWinFooter = { fg = "#6b7280", ctermfg = 244, default = true },
+  MetaphrastWinBorder = { fg = "#2dd4bf", ctermfg = 80, default = true },
+  MetaphrastWinTitle = { fg = "#2dd4bf", ctermfg = 80, bold = true, default = true },
+  MetaphrastWinFooter = { fg = "#6b7280", ctermfg = 244, default = true },
 }
 
 -- winhighlight string for the popup window. This mirrors Snacks' default
 -- `win.wo.winhighlight` baseline (so the body, winbar, and separators keep
 -- their themed look) and substitutes only the border/title/footer groups with
--- the metafrastis teal palette defined above.
+-- the metaphrast teal palette defined above.
 local win_highlight = table.concat({
   "Normal:SnacksNormal",
   "NormalNC:SnacksNormalNC",
   "WinBar:SnacksWinBar",
   "WinBarNC:SnacksWinBarNC",
-  "FloatBorder:MetafrastisWinBorder",
-  "FloatTitle:MetafrastisWinTitle",
-  "FloatFooter:MetafrastisWinFooter",
+  "FloatBorder:MetaphrastWinBorder",
+  "FloatTitle:MetaphrastWinTitle",
+  "FloatFooter:MetaphrastWinFooter",
   "WinSeparator:SnacksWinSeparator",
 }, ",")
 
@@ -218,7 +218,7 @@ function M.show_window(text, meta, opts)
   local merged_win = vim.tbl_deep_extend("force", {}, default_win_opts or {}, opts and opts.win or {})
   local padding = merged_win.padding or (opts and opts.padding) or nil
   if not padding then
-    local ok, core = pcall(require, "metafrastis")
+    local ok, core = pcall(require, "metaphrast")
     if ok and core.config and core.config.ui and core.config.ui.win then
       padding = core.config.ui.win.padding
     end
@@ -304,7 +304,7 @@ function M.show_window(text, meta, opts)
       vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "BufLeave" }, {
         group = autoclose_group,
         once = true,
-        desc = "metafrastis: close translation window",
+        desc = "metaphrast: close translation window",
         callback = function(args)
           close_on_cursor_context_change(args.event)
         end,

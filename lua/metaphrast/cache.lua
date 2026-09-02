@@ -1,6 +1,6 @@
 local uv = vim.uv or vim.loop
 
----@class MetafrastisCache
+---@class MetaphrastCache
 ---@field enabled boolean
 ---@field dir string
 ---@field ttl integer
@@ -75,7 +75,7 @@ local function mem_evict_overflow(max_entries)
   end
 end
 
----@param cache MetafrastisCache
+---@param cache MetaphrastCache
 ---@param key string
 ---@param value string
 ---@param saved_at integer
@@ -91,7 +91,7 @@ local function mem_put(cache, key, value, saved_at)
   mem_evict_overflow(cache.memory_max_entries or 512)
 end
 
----@param cache MetafrastisCache
+---@param cache MetaphrastCache
 ---@param key string
 ---@param now integer
 ---@return string|nil
@@ -167,7 +167,7 @@ function M.make_key(provider, source, target, text)
   return vim.fn.sha256(raw)
 end
 
----@param cache MetafrastisCache
+---@param cache MetaphrastCache
 ---@param key string
 ---@return string|nil
 function M.get(cache, key)
@@ -203,7 +203,7 @@ function M.get(cache, key)
   return decoded.value
 end
 
----@param cache MetafrastisCache
+---@param cache MetaphrastCache
 ---@param key string
 ---@param value string
 function M.put(cache, key, value)
@@ -226,7 +226,7 @@ function M.put(cache, key, value)
   write_atomic(path, payload)
 end
 
----@param cache MetafrastisCache
+---@param cache MetaphrastCache
 function M.clear(cache)
   if not cache or not cache.enabled or not cache.dir then
     mem_clear()

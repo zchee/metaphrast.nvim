@@ -1,4 +1,4 @@
-local textflow = require("metafrastis.textflow")
+local textflow = require("metaphrast.textflow")
 
 describe("textflow.is_list_marker", function()
   it("detects dash, star, and plus bullets", function()

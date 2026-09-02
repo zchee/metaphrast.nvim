@@ -24,7 +24,7 @@ function M.is_list_marker(s)
   return false
 end
 
----@class MetafrastisFlowSegment
+---@class MetaphrastFlowSegment
 ---@field kind "para"|"raw"
 ---@field text string|nil Paragraph content with intra-paragraph newlines collapsed to spaces.
 ---@field content string|nil Raw passthrough line content (no comment leader).
@@ -40,8 +40,8 @@ end
 ---list-marker lines break paragraphs, and non-comment lines pass through
 ---untouched (never merged or translated as prose).
 ---@param stripped string[]
----@param info MetafrastisCommentLineInfo[]
----@return MetafrastisFlowSegment[] segments
+---@param info MetaphrastCommentLineInfo[]
+---@return MetaphrastFlowSegment[] segments
 ---@return integer para_count
 function M.segment(stripped, info)
   local segments = {}

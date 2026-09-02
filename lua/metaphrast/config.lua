@@ -1,4 +1,4 @@
----@class MetafrastisCacheConfig
+---@class MetaphrastCacheConfig
 ---@field enabled boolean
 ---@field ttl number
 ---@field dir string
@@ -7,11 +7,11 @@
 ---@field memory_max_entries integer
 ---@field memory_skip_disk_ttl integer
 
----@class MetafrastisHttpConfig
+---@class MetaphrastHttpConfig
 ---@field timeout integer
 ---@field backend string? "curl"|"plenary"
 
----@class MetafrastisProviderConfig
+---@class MetaphrastProviderConfig
 ---@field api_key string?
 ---@field adc_path string?
 ---@field gcp_project_id string?
@@ -22,29 +22,29 @@
 ---@field fallback_models string[]?
 ---@field retry_on_upstream_rate_limit boolean?
 
----@class MetafrastisConfig
+---@class MetaphrastConfig
 ---@field provider string
 ---@field icon string
 ---@field target_lang string
 ---@field source_lang string|nil
 ---@field replace boolean
 ---@field max_chars integer
----@field cache MetafrastisCacheConfig
----@field http MetafrastisHttpConfig
----@field providers table<string, MetafrastisProviderConfig>
+---@field cache MetaphrastCacheConfig
+---@field http MetaphrastHttpConfig
+---@field providers table<string, MetaphrastProviderConfig>
 ---@field ui { win?: { padding?: { top?: integer, bottom?: integer, left?: integer, right?: integer }, width?: integer|nil, height?: integer|nil } }
 ---@field pricing_last_review string
 
----@class MetafrastisUiConfig
+---@class MetaphrastUiConfig
 ---@field win table|nil
 
 local M = {}
 
 local function default_cache_dir()
-  return vim.fn.stdpath("cache") .. "/metafrastis"
+  return vim.fn.stdpath("cache") .. "/metaphrast"
 end
 
----@return MetafrastisConfig
+---@return MetaphrastConfig
 function M.defaults()
   return {
     provider = "openai",
@@ -105,7 +105,7 @@ function M.defaults()
         base_url = "https://openrouter.ai/api/v1/chat/completions",
         input_per_million = 0.15,
         output_per_million = 0.60,
-        referer = "https://github.com/zchee/metafrastis.nvim",
+        referer = "https://github.com/zchee/metaphrast.nvim",
         fallback_models = { "openrouter/auto" },
         retry_on_upstream_rate_limit = true,
       },
@@ -121,7 +121,7 @@ function M.defaults()
 end
 
 ---@param opts table|nil
----@return MetafrastisConfig
+---@return MetaphrastConfig
 function M.merge(opts)
   return vim.tbl_deep_extend("force", M.defaults(), opts or {})
 end

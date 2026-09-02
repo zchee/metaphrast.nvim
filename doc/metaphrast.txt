@@ -1,41 +1,41 @@
-*metafrastis.txt*         For Neovim >= 0.8.0    Last change: 2025 December 03
+*metaphrast.txt*         For Neovim >= 0.8.0    Last change: 2025 December 03
 
 ==============================================================================
-Table of Contents                              *metafrastis-table-of-contents*
+Table of Contents                              *metaphrast-table-of-contents*
 
-1. Metafrastis.nvim Overview              |metafrastis-overview|
-2. Installation                           |metafrastis-installation|
-3. Configuration                          |metafrastis-configuration|
-4. Commands                               |metafrastis-commands|
-5. Cost Notes                             |metafrastis-cost|
-6. Price Refresh                          |metafrastis-refresh|
+1. Metaphrast.nvim Overview              |metaphrast-overview|
+2. Installation                           |metaphrast-installation|
+3. Configuration                          |metaphrast-configuration|
+4. Commands                               |metaphrast-commands|
+5. Cost Notes                             |metaphrast-cost|
+6. Price Refresh                          |metaphrast-refresh|
 
 ==============================================================================
-1. Metafrastis.nvim Overview                        *metafrastis-overview*
+1. Metaphrast.nvim Overview                        *metaphrast-overview*
 
 Translate text inside Neovim using multiple providers (Google Translate/Cloud,
 DeepL, OpenAI, Google Gemini, OpenRouter). Includes file-backed caching and a
 per-call cost guard to avoid runaway spend.
 
 ==============================================================================
-2. Installation                                   *metafrastis-installation*
+2. Installation                                   *metaphrast-installation*
 
 Use your preferred manager. Example (lazy.nvim):
 
 >
     {
-      "zchee/metafrastis.nvim",
+      "zchee/metaphrast.nvim",
       config = function()
-        require("metafrastis").setup()
+        require("metaphrast").setup()
       end,
     }
 <
 
 ==============================================================================
-3. Configuration                                  *metafrastis-configuration*
+3. Configuration                                  *metaphrast-configuration*
 
 >
-    require("metafrastis").setup({
+    require("metaphrast").setup({
       provider = "openai",   -- falls back to echo if credentials missing
       target_lang = "en",
       max_chars = 8000,
@@ -61,41 +61,41 @@ Use your preferred manager. Example (lazy.nvim):
     })
 <
 
-If a configured provider is missing credentials, Metafrastis uses the built-in
+If a configured provider is missing credentials, Metaphrast uses the built-in
 `echo` provider so you can test locally without network calls.
 
 OpenRouter model providers can return their own HTTP 429 rate limits even when
 your OpenRouter account is still usable. When
-`providers.openrouter.retry_on_upstream_rate_limit` is enabled, Metafrastis
+`providers.openrouter.retry_on_upstream_rate_limit` is enabled, Metaphrast
 retries provider-originated 429 responses once through each configured
 `providers.openrouter.fallback_models` entry. Account or authentication
 failures are not retried, so quota and billing problems remain visible.
 
 ==============================================================================
-4. Commands                                         *metafrastis-commands*
+4. Commands                                         *metaphrast-commands*
 
-`:MetafrastisTranslate [source] [target]`~
+`:MetaphrastTranslate [source] [target]`~
     Translate the current range (default current line). Use `!` to replace
     buffer text, otherwise the translation is echoed.
 
-:MetafrastisTranslateUI [source] [target]~
+:MetaphrastTranslateUI [source] [target]~
     Async UI path using the Plenary backend. Prompts for target language when
     omitted (Snacks.input if available, otherwise `vim.ui.input`). Progress and
     results are shown via Snacks.notify when installed, with `vim.notify`
     fallback.
 
-:MetafrastisCacheClear~
-    Remove all cached translations under `stdpath('cache')/metafrastis`.
+:MetaphrastCacheClear~
+    Remove all cached translations under `stdpath('cache')/metaphrast`.
 
 Examples:
 
 >
-    :'<,'>MetafrastisTranslate en es!
-    :MetafrastisTranslate es
+    :'<,'>MetaphrastTranslate en es!
+    :MetaphrastTranslate es
 <
 
 ==============================================================================
-5. Cost Notes                                             *metafrastis-cost*
+5. Cost Notes                                             *metaphrast-cost*
 
 Approximate 2025-12 pricing (USD):
 
@@ -110,10 +110,10 @@ budget; at ~50 tokens per request and 50k requests, gpt-4o-mini typically stays
 well below $50/month.
 
 ==============================================================================
-6. Price Refresh                                   *metafrastis-refresh*
+6. Price Refresh                                   *metaphrast-refresh*
 
 - When provider rates change, update `pricing_last_review` and price fields in
-  `lua/metafrastis/config.lua`.
+  `lua/metaphrast/config.lua`.
 - Lower `cache.max_estimated_cost` for short snippets (e.g. 0.25) or raise for
   larger batches as needed.
 - Tune `max_chars` to your usual translation size to bound per-call spend and

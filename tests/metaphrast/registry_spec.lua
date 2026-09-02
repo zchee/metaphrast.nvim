@@ -1,4 +1,4 @@
-local registry = require("metafrastis.providers")
+local registry = require("metaphrast.providers")
 
 describe("provider registry", function()
   before_each(function()

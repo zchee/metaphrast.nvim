@@ -1,35 +1,35 @@
-local metafrastis = require("metafrastis")
-local registry = require("metafrastis.providers")
+local metaphrast = require("metaphrast")
+local registry = require("metaphrast.providers")
 
 describe("setup", function()
   before_each(function()
-    metafrastis._reset_for_tests()
+    metaphrast._reset_for_tests()
   end)
 
   it("falls back to echo when provider credentials are missing", function()
-    metafrastis.setup({
+    metaphrast.setup({
       provider = "openai",
       providers = {
         openai = { api_key = "" },
       },
     })
-    assert.equals("echo", metafrastis.config.provider)
+    assert.equals("echo", metaphrast.config.provider)
   end)
 
   it("keeps chosen provider when valid", function()
-    metafrastis.setup({ provider = "echo" })
-    assert.equals("echo", metafrastis.config.provider)
+    metaphrast.setup({ provider = "echo" })
+    assert.equals("echo", metaphrast.config.provider)
   end)
 end)
 
 describe("translation core", function()
   before_each(function()
-    metafrastis._reset_for_tests()
+    metaphrast._reset_for_tests()
   end)
 
   it("translates via echo provider", function()
-    metafrastis.setup({ provider = "echo" })
-    local out = metafrastis.translate("Hello", { target_lang = "es" })
+    metaphrast.setup({ provider = "echo" })
+    local out = metaphrast.translate("Hello", { target_lang = "es" })
     assert.equals("Hello [echo]->es", out)
   end)
 
@@ -42,14 +42,14 @@ describe("translation core", function()
         return 0
       end,
     })
-    metafrastis.config.provider = "cr"
-    metafrastis.config.replace = true
+    metaphrast.config.provider = "cr"
+    metaphrast.config.replace = true
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "stub" })
 
-    local out = metafrastis.translate_range(bufnr, 0, 1, { target_lang = "en" })
+    local out = metaphrast.translate_range(bufnr, 0, 1, { target_lang = "en" })
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
     assert.equals("hello world", out)
@@ -59,7 +59,7 @@ describe("translation core", function()
 
   it("retries OpenRouter fallback model for line-range upstream rate limits", function()
     local requested_models = {}
-    metafrastis.setup({
+    metaphrast.setup({
       provider = "openrouter",
       cache = { enabled = false },
       providers = {
@@ -71,7 +71,7 @@ describe("translation core", function()
         },
       },
     })
-    metafrastis.http = function(_, _, opts)
+    metaphrast.http = function(_, _, opts)
       local body = vim.json.decode(opts.data)
       table.insert(requested_models, body.model)
       assert.truthy(body.messages[2].content:find("first line\nsecond line", 1, true))
@@ -104,7 +104,7 @@ describe("translation core", function()
     vim.api.nvim_set_current_buf(bufnr)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "first line", "second line" })
 
-    local out = metafrastis.translate_range(bufnr, 0, 2, { target_lang = "ja" })
+    local out = metaphrast.translate_range(bufnr, 0, 2, { target_lang = "ja" })
 
     assert.equals("fallback translation\nsecond translated", out)
     assert.same({ "deepseek/deepseek-v4-flash", "openrouter/auto" }, requested_models)
@@ -121,9 +121,9 @@ describe("translation core", function()
         return 0
       end,
     })
-    metafrastis.config.provider = "count"
-    local first = metafrastis.translate("hi", { target_lang = "fr" })
-    local second = metafrastis.translate("hi", { target_lang = "fr" })
+    metaphrast.config.provider = "count"
+    local first = metaphrast.translate("hi", { target_lang = "fr" })
+    local second = metaphrast.translate("hi", { target_lang = "fr" })
     assert.equals("hi #1", first)
     assert.equals("hi #1", second)
     assert.equals(1, calls)
@@ -138,10 +138,10 @@ describe("translation core", function()
         return "should-not-run"
       end,
     })
-    metafrastis.config.provider = "expensive"
-    metafrastis.config.cache.max_estimated_cost = 1
+    metaphrast.config.provider = "expensive"
+    metaphrast.config.cache.max_estimated_cost = 1
     assert.has_error(function()
-      metafrastis.translate("hi", { target_lang = "fr" })
+      metaphrast.translate("hi", { target_lang = "fr" })
     end)
   end)
 
@@ -158,22 +158,22 @@ describe("translation core", function()
         return string.format("%s-%s", payload.text, cfg.secret)
       end,
     })
-    metafrastis.config.provider = "needs_secret"
-    metafrastis.config.providers.needs_secret = { secret = "ok" }
+    metaphrast.config.provider = "needs_secret"
+    metaphrast.config.providers.needs_secret = { secret = "ok" }
 
-    local out = metafrastis.translate("ping", { target_lang = "en" })
+    local out = metaphrast.translate("ping", { target_lang = "en" })
     assert.equals("ping-ok", out)
   end)
 
   it("falls back to echo when provider lacks credentials at call time", function()
-    metafrastis.setup({
+    metaphrast.setup({
       provider = "deepl",
       providers = {
         deepl = { api_key = "" },
       },
     })
 
-    local out, meta = metafrastis.translate("Hello", { target_lang = "ja" })
+    local out, meta = metaphrast.translate("Hello", { target_lang = "ja" })
     assert.equals("Hello [echo]->ja", out)
     assert.is_table(meta)
     assert.equals("echo", meta.provider)
@@ -183,7 +183,7 @@ end)
 
 describe("comment handling", function()
   before_each(function()
-    metafrastis._reset_for_tests()
+    metaphrast._reset_for_tests()
   end)
 
   it("strips line comments before translation and reapplies on replace", function()
@@ -197,8 +197,8 @@ describe("comment handling", function()
         return 0
       end,
     })
-    metafrastis.config.provider = "capture"
-    metafrastis.config.replace = true
+    metaphrast.config.provider = "capture"
+    metaphrast.config.replace = true
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -207,7 +207,7 @@ describe("comment handling", function()
       "// anthropicLLM implements the adk [model.LLM] interface using the Anthropic SDK.",
     })
 
-    metafrastis.translate_range(bufnr, 0, 1, { target_lang = "es" })
+    metaphrast.translate_range(bufnr, 0, 1, { target_lang = "es" })
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
     assert.equals("// anthropicLLM implements the adk [model.LLM] interface using the Anthropic SDK. <t>", lines[1])
@@ -225,8 +225,8 @@ describe("comment handling", function()
         return 0
       end,
     })
-    metafrastis.config.provider = "capture_multiline"
-    metafrastis.config.replace = true
+    metaphrast.config.provider = "capture_multiline"
+    metaphrast.config.replace = true
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -238,7 +238,7 @@ describe("comment handling", function()
       "//     It is the JSON equivalent of Go struct embedding.",
     })
 
-    metafrastis.translate_range(bufnr, 0, 4, { target_lang = "ja" })
+    metaphrast.translate_range(bufnr, 0, 4, { target_lang = "ja" })
 
     -- The provider must receive the whole paragraph as ONE line: the soft-wrap
     -- newlines that previously fragmented translation are collapsed to spaces.
@@ -264,8 +264,8 @@ describe("comment handling", function()
         return 0
       end,
     })
-    metafrastis.config.provider = "canned_ja"
-    metafrastis.config.replace = true
+    metaphrast.config.provider = "canned_ja"
+    metaphrast.config.replace = true
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -277,7 +277,7 @@ describe("comment handling", function()
     }
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, source)
 
-    metafrastis.translate_range(bufnr, 0, 3, { target_lang = "ja" })
+    metaphrast.translate_range(bufnr, 0, 3, { target_lang = "ja" })
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
     -- Width budget = widest source content line (leader stripped).
@@ -309,8 +309,8 @@ describe("comment handling", function()
         return 0
       end,
     })
-    metafrastis.config.provider = "capture_paras"
-    metafrastis.config.replace = true
+    metaphrast.config.provider = "capture_paras"
+    metaphrast.config.replace = true
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -322,7 +322,7 @@ describe("comment handling", function()
       "// Second paragraph here.",
     })
 
-    metafrastis.translate_range(bufnr, 0, 4, { target_lang = "ja" })
+    metaphrast.translate_range(bufnr, 0, 4, { target_lang = "ja" })
 
     -- Two paragraphs => exactly one separating newline; each paragraph joined.
     assert.equals("First paragraph that wraps across two lines.\nSecond paragraph here.", last_text)
@@ -348,8 +348,8 @@ describe("comment handling", function()
         return 0
       end,
     })
-    metafrastis.config.provider = "capture_block"
-    metafrastis.config.replace = true
+    metaphrast.config.provider = "capture_block"
+    metaphrast.config.replace = true
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -358,7 +358,7 @@ describe("comment handling", function()
       "    /* Translate only the inner text */",
     })
 
-    metafrastis.translate_range(bufnr, 0, 1, { target_lang = "en" })
+    metaphrast.translate_range(bufnr, 0, 1, { target_lang = "en" })
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
     assert.equals("    /* Translate only the inner text <t> */", lines[1])
@@ -389,35 +389,35 @@ describe("comment handling", function()
         return 0
       end,
     })
-    metafrastis.config.provider = "capture_window"
-    metafrastis.config.replace = false
+    metaphrast.config.provider = "capture_window"
+    metaphrast.config.replace = false
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
     vim.bo[bufnr].commentstring = "// %s"
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "// hello world" })
 
-    metafrastis.translate_range(bufnr, 0, 1, { target_lang = "de", show_window = true })
+    metaphrast.translate_range(bufnr, 0, 1, { target_lang = "de", show_window = true })
 
     assert.equals("hello world", last_text)
     assert.truthy(win_opts)
     assert.equals("hello world <t>", win_opts.text[1])
 
     package.loaded["snacks"] = nil
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
   end)
 end)
 
 describe("commands", function()
   before_each(function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo" })
-    vim.cmd("runtime plugin/metafrastis.lua")
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+    vim.cmd("runtime plugin/metaphrast.lua")
   end)
 
   it("replaces selected lines when bang is used", function()
     package.loaded["snacks"] = false
-    local test_ui = require("metafrastis.ui")
+    local test_ui = require("metaphrast.ui")
     test_ui._reset_for_tests()
     local original_progress = test_ui.progress
     local original_notify = test_ui.notify
@@ -432,7 +432,7 @@ describe("commands", function()
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
-    vim.cmd("1,1MetafrastisTranslate! en es")
+    vim.cmd("1,1MetaphrastTranslate! en es")
 
     vim.wait(1000, function()
       return done
@@ -446,12 +446,12 @@ describe("commands", function()
   end)
 
   it("uses configured target_lang without prompting when args are omitted", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo", target_lang = "fr", source_lang = "en" })
-    vim.cmd("runtime plugin/metafrastis.lua")
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo", target_lang = "fr", source_lang = "en" })
+    vim.cmd("runtime plugin/metaphrast.lua")
 
     package.loaded["snacks"] = false
-    local test_ui = require("metafrastis.ui")
+    local test_ui = require("metaphrast.ui")
     test_ui._reset_for_tests()
     local original_prompt = test_ui.prompt_target
     local original_progress = test_ui.progress
@@ -472,7 +472,7 @@ describe("commands", function()
     vim.api.nvim_set_current_buf(bufnr)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
 
-    vim.cmd("1,1MetafrastisTranslate!")
+    vim.cmd("1,1MetaphrastTranslate!")
 
     vim.wait(1000, function()
       return done
@@ -488,12 +488,12 @@ describe("commands", function()
   end)
 
   it("prefers explicit args over configured languages", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo", target_lang = "fr", source_lang = "en" })
-    vim.cmd("runtime plugin/metafrastis.lua")
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo", target_lang = "fr", source_lang = "en" })
+    vim.cmd("runtime plugin/metaphrast.lua")
 
     package.loaded["snacks"] = false
-    local test_ui = require("metafrastis.ui")
+    local test_ui = require("metaphrast.ui")
     test_ui._reset_for_tests()
     local original_progress = test_ui.progress
     local original_notify = test_ui.notify
@@ -509,7 +509,7 @@ describe("commands", function()
     vim.api.nvim_set_current_buf(bufnr)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
 
-    vim.cmd("1,1MetafrastisTranslate! es")
+    vim.cmd("1,1MetaphrastTranslate! es")
 
     vim.wait(1000, function()
       return done
@@ -525,14 +525,14 @@ end)
 
 describe("async translation", function()
   before_each(function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo" })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
   end)
 
   it("translates via async path", function()
     local result
     local done = false
-    metafrastis.translate_async("Hello", { target_lang = "fr" }, {
+    metaphrast.translate_async("Hello", { target_lang = "fr" }, {
       on_success = function(out)
         result = out
         done = true
@@ -559,11 +559,11 @@ describe("async translation", function()
         return 0
       end,
     })
-    metafrastis.config.provider = "count_async"
+    metaphrast.config.provider = "count_async"
     local results = {}
     local done = 0
     for i = 1, 2 do
-      metafrastis.translate_async("ping", { target_lang = "en" }, {
+      metaphrast.translate_async("ping", { target_lang = "en" }, {
         on_success = function(out)
           results[i] = out
           done = done + 1
@@ -581,8 +581,8 @@ end)
 
 describe("visual selection translation", function()
   before_each(function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo" })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
   end)
 
   ---Helper: set visual marks on a buffer.
@@ -602,7 +602,7 @@ describe("visual selection translation", function()
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world", "second line" })
     set_visual_marks(bufnr, 1, 0, 1, 10)
 
-    local result = metafrastis.translate_selection(bufnr, "V", { target_lang = "es", replace = true })
+    local result = metaphrast.translate_selection(bufnr, "V", { target_lang = "es", replace = true })
 
     assert.equals("Hello world [echo]->es", result)
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -616,7 +616,7 @@ describe("visual selection translation", function()
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "first", "second", "third" })
     set_visual_marks(bufnr, 1, 0, 2, 5)
 
-    local result = metafrastis.translate_selection(bufnr, "V", { target_lang = "ja", replace = true })
+    local result = metaphrast.translate_selection(bufnr, "V", { target_lang = "ja", replace = true })
 
     assert.is_string(result)
     assert.truthy(result:len() > 0)
@@ -640,7 +640,7 @@ describe("visual selection translation", function()
     -- Select "world" (col 6..10 inclusive in mark, which becomes 6..11 exclusive)
     set_visual_marks(bufnr, 1, 6, 1, 10)
 
-    local result = metafrastis.translate_selection(bufnr, "v", { target_lang = "fr", replace = true })
+    local result = metaphrast.translate_selection(bufnr, "v", { target_lang = "fr", replace = true })
 
     assert.equals("world [echo]->fr", result)
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -653,7 +653,7 @@ describe("visual selection translation", function()
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "" })
     set_visual_marks(bufnr, 1, 0, 1, 0)
 
-    local result = metafrastis.translate_selection(bufnr, "V", { target_lang = "de", replace = true })
+    local result = metaphrast.translate_selection(bufnr, "V", { target_lang = "de", replace = true })
 
     assert.equals("", result)
   end)
@@ -671,14 +671,14 @@ describe("visual selection translation", function()
         return { show = function() end }
       end,
     }
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
     set_visual_marks(bufnr, 1, 0, 1, 10)
 
-    metafrastis.translate_selection(bufnr, "V", {
+    metaphrast.translate_selection(bufnr, "V", {
       target_lang = "es",
       replace = false,
       show_window = true,
@@ -688,7 +688,7 @@ describe("visual selection translation", function()
     assert.equals("Hello world [echo]->es", win_opts.text[1])
 
     package.loaded["snacks"] = nil
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
   end)
 
   it("async translates and replaces visual selection", function()
@@ -699,7 +699,7 @@ describe("visual selection translation", function()
 
     local done = false
     local result
-    metafrastis.translate_selection_async(bufnr, "V", { target_lang = "ko", replace = true }, {
+    metaphrast.translate_selection_async(bufnr, "V", { target_lang = "ko", replace = true }, {
       on_success = function(out)
         result = out
         done = true
@@ -728,7 +728,7 @@ describe("visual selection translation", function()
 
     local done = false
     local result
-    metafrastis.translate_selection_async(bufnr, "V", { target_lang = "zh" }, {
+    metaphrast.translate_selection_async(bufnr, "V", { target_lang = "zh" }, {
       on_success = function(out)
         result = out
         done = true
@@ -750,7 +750,7 @@ describe("visual selection translation", function()
     -- Select from "world" on line 1 to "foo" on line 2 (charwise)
     set_visual_marks(bufnr, 1, 6, 2, 2)
 
-    local result = metafrastis.translate_selection(bufnr, "v", { target_lang = "de", replace = true })
+    local result = metaphrast.translate_selection(bufnr, "v", { target_lang = "de", replace = true })
 
     assert.is_string(result)
     assert.truthy(result:len() > 0)
@@ -772,7 +772,7 @@ describe("visual selection translation", function()
     })
     set_visual_marks(bufnr, 1, 0, 2, 14)
 
-    local result = metafrastis.translate_selection(bufnr, "V", { target_lang = "es", replace = true })
+    local result = metaphrast.translate_selection(bufnr, "V", { target_lang = "es", replace = true })
 
     -- Translated payload must not contain the comment leader.
     assert.is_nil(result:find("//"), "translated text should not contain comment leader: " .. result)
@@ -795,7 +795,7 @@ describe("visual selection translation", function()
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "    // indented comment" })
     set_visual_marks(bufnr, 1, 0, 1, 23)
 
-    metafrastis.translate_selection(bufnr, "V", { target_lang = "ja", replace = true })
+    metaphrast.translate_selection(bufnr, "V", { target_lang = "ja", replace = true })
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
     assert.truthy(lines[1]:match("^    // "), "indent and // prefix should be restored: " .. lines[1])
@@ -808,7 +808,7 @@ describe("visual selection translation", function()
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "/* block text */" })
     set_visual_marks(bufnr, 1, 0, 1, 16)
 
-    local result = metafrastis.translate_selection(bufnr, "V", { target_lang = "fr", replace = true })
+    local result = metaphrast.translate_selection(bufnr, "V", { target_lang = "fr", replace = true })
 
     assert.is_nil(result:find("/%*"), "translated text should not contain block comment open: " .. result)
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -822,7 +822,7 @@ describe("visual selection translation", function()
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "// not actually a comment" })
     set_visual_marks(bufnr, 1, 0, 1, 25)
 
-    local result = metafrastis.translate_selection(bufnr, "V", { target_lang = "de", replace = true })
+    local result = metaphrast.translate_selection(bufnr, "V", { target_lang = "de", replace = true })
 
     assert.equals("// not actually a comment [echo]->de", result)
   end)
@@ -840,7 +840,7 @@ describe("visual selection translation", function()
         return { show = function() end }
       end,
     }
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -848,7 +848,7 @@ describe("visual selection translation", function()
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "// comment payload" })
     set_visual_marks(bufnr, 1, 0, 1, 18)
 
-    metafrastis.translate_selection(bufnr, "V", {
+    metaphrast.translate_selection(bufnr, "V", {
       target_lang = "es",
       replace = false,
       show_window = true,
@@ -858,7 +858,7 @@ describe("visual selection translation", function()
     assert.is_nil(win_opts.text[1]:find("//"), "show_window output should not contain // : " .. win_opts.text[1])
 
     package.loaded["snacks"] = nil
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
   end)
 
   it("async strips and reapplies line comments on linewise visual selection", function()
@@ -870,7 +870,7 @@ describe("visual selection translation", function()
 
     local done = false
     local result
-    metafrastis.translate_selection_async(bufnr, "V", { target_lang = "ko", replace = true }, {
+    metaphrast.translate_selection_async(bufnr, "V", { target_lang = "ko", replace = true }, {
       on_success = function(out)
         result = out
         done = true
@@ -900,12 +900,12 @@ describe("Snacks.win result window", function()
     vim.fn.mode = original_mode
     vim.api.nvim_feedkeys = original_feedkeys
     package.loaded["snacks"] = nil
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
   end)
 
   it("uses snacks.win when show_window is enabled", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo" })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
 
     local win_opts
     package.loaded["snacks"] = {
@@ -919,7 +919,7 @@ describe("Snacks.win result window", function()
         return { show = function() end }
       end,
     }
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -932,7 +932,7 @@ describe("Snacks.win result window", function()
     end
 
     local done = false
-    metafrastis.translate_range_async(bufnr, 0, 1, {
+    metaphrast.translate_range_async(bufnr, 0, 1, {
       target_lang = "es",
       show_window = true,
       replace = false,
@@ -969,8 +969,8 @@ describe("Snacks.win result window", function()
   end)
 
   it("applies ui.win defaults from setup", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo", ui = { win = { width = 55, border = "single" } } })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo", ui = { win = { width = 55, border = "single" } } })
 
     local win_opts
     package.loaded["snacks"] = {
@@ -984,14 +984,14 @@ describe("Snacks.win result window", function()
         return { show = function() end }
       end,
     }
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello" })
 
     local done = false
-    metafrastis.translate_range_async(bufnr, 0, 1, {
+    metaphrast.translate_range_async(bufnr, 0, 1, {
       target_lang = "es",
       show_window = true,
       replace = false,
@@ -1015,8 +1015,8 @@ describe("Snacks.win result window", function()
   end)
 
   it("allows call-specific win opts to override setup defaults", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo", ui = { win = { width = 80, border = "single" } } })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo", ui = { win = { width = 80, border = "single" } } })
 
     local win_opts
     package.loaded["snacks"] = {
@@ -1030,14 +1030,14 @@ describe("Snacks.win result window", function()
         return { show = function() end }
       end,
     }
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello" })
 
     local done = false
-    metafrastis.translate_range_async(bufnr, 0, 1, {
+    metaphrast.translate_range_async(bufnr, 0, 1, {
       target_lang = "es",
       show_window = true,
       replace = false,
@@ -1062,8 +1062,8 @@ describe("Snacks.win result window", function()
   end)
 
   it("applies padding from setup defaults", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({
+    metaphrast._reset_for_tests()
+    metaphrast.setup({
       provider = "echo",
       ui = {
         win = {
@@ -1084,14 +1084,14 @@ describe("Snacks.win result window", function()
         return { show = function() end }
       end,
     }
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
 
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello" })
 
     local done = false
-    metafrastis.translate_range_async(bufnr, 0, 1, {
+    metaphrast.translate_range_async(bufnr, 0, 1, {
       target_lang = "es",
       show_window = true,
       replace = false,
@@ -1115,7 +1115,7 @@ describe("Snacks.win result window", function()
     assert.equals("    ", win_opts.text[3])
 
     package.loaded["snacks"] = nil
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
   end)
 
   local function install_mock_snacks_win(win_id)
@@ -1137,7 +1137,7 @@ describe("Snacks.win result window", function()
         }
       end,
     }
-    require("metafrastis.ui")._reset_for_tests()
+    require("metaphrast.ui")._reset_for_tests()
     return state
   end
 
@@ -1147,7 +1147,7 @@ describe("Snacks.win result window", function()
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
 
     local done = false
-    metafrastis.translate_range_async(bufnr, 0, 1, {
+    metaphrast.translate_range_async(bufnr, 0, 1, {
       target_lang = target_lang,
       show_window = true,
       replace = false,
@@ -1168,8 +1168,8 @@ describe("Snacks.win result window", function()
   end
 
   it("closes snacks.win on CursorMoved", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo" })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
     local state = install_mock_snacks_win(1000)
 
     show_echo_window("es")
@@ -1179,8 +1179,8 @@ describe("Snacks.win result window", function()
   end)
 
   it("leaves visual mode when CursorMoved closes snacks.win", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo" })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
     local state = install_mock_snacks_win(1001)
     local feedkeys_calls = {}
     vim.fn.mode = function()
@@ -1203,8 +1203,8 @@ describe("Snacks.win result window", function()
   end)
 
   it("does not leave insert mode when CursorMovedI closes snacks.win", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo" })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
     local state = install_mock_snacks_win(1002)
     local feedkeys_calls = {}
     vim.fn.mode = function()
@@ -1223,8 +1223,8 @@ describe("Snacks.win result window", function()
   end)
 
   it("does not feed escape for stale CursorMoved autocmds after a newer window already closed", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo" })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
     local state = install_mock_snacks_win(1003)
     local feedkeys_calls = {}
     vim.fn.mode = function()
@@ -1254,7 +1254,7 @@ describe("ui helper", function()
   after_each(function()
     vim.notify = original_notify
     package.loaded["snacks"] = nil
-    package.loaded["metafrastis.ui"] = nil
+    package.loaded["metaphrast.ui"] = nil
   end)
 
   it("falls back to vim.notify when snacks missing", function()
@@ -1263,7 +1263,7 @@ describe("ui helper", function()
       table.insert(messages, { msg = msg, level = level })
     end
     package.loaded["snacks"] = false
-    local ui = require("metafrastis.ui")
+    local ui = require("metaphrast.ui")
     ui.notify("hello", "info", { title = "t" })
     assert.equals("hello", messages[1].msg)
   end)
@@ -1283,7 +1283,7 @@ describe("ui helper", function()
         end,
       },
     }
-    local ui = require("metafrastis.ui")
+    local ui = require("metaphrast.ui")
     ui.notify("hi", "warn", { title = "x" })
     assert.equals("hi", notified[1].msg)
     assert.equals("warn", notified[1].level)
@@ -1301,7 +1301,7 @@ describe("ui helper", function()
         cb("ja")
       end,
     }
-    local ui = require("metafrastis.ui")
+    local ui = require("metaphrast.ui")
     ui.prompt_target("es", function(value)
       confirmed = value
     end)
@@ -1322,7 +1322,7 @@ describe("ui helper", function()
         return { show = function() end }
       end,
     }
-    local ui = require("metafrastis.ui")
+    local ui = require("metaphrast.ui")
     ui._reset_for_tests()
     ui.show_window("ciao", { provider = "echo", cached = true }, { target_lang = "es" })
     assert.truthy(win_opts)
@@ -1353,23 +1353,23 @@ describe("ui helper", function()
         return { show = function() end }
       end,
     }
-    local ui = require("metafrastis.ui")
+    local ui = require("metaphrast.ui")
     ui._reset_for_tests()
     ui.show_window("ciao", { provider = "echo" }, { target_lang = "es" })
 
     assert.truthy(win_opts)
     local winhl = win_opts.wo.winhighlight
     assert.truthy(winhl, "expected wo.winhighlight to be set")
-    -- Border/title/footer routed to the metafrastis palette groups.
-    assert.truthy(winhl:find("FloatBorder:MetafrastisWinBorder", 1, true))
-    assert.truthy(winhl:find("FloatTitle:MetafrastisWinTitle", 1, true))
-    assert.truthy(winhl:find("FloatFooter:MetafrastisWinFooter", 1, true))
+    -- Border/title/footer routed to the metaphrast palette groups.
+    assert.truthy(winhl:find("FloatBorder:MetaphrastWinBorder", 1, true))
+    assert.truthy(winhl:find("FloatTitle:MetaphrastWinTitle", 1, true))
+    assert.truthy(winhl:find("FloatFooter:MetaphrastWinFooter", 1, true))
     -- Snacks' body/separator baseline is preserved, not clobbered.
     assert.truthy(winhl:find("Normal:SnacksNormal", 1, true))
     assert.truthy(winhl:find("WinSeparator:SnacksWinSeparator", 1, true))
 
     -- The teal highlight group is actually registered.
-    local border_hl = vim.api.nvim_get_hl(0, { name = "MetafrastisWinBorder" })
+    local border_hl = vim.api.nvim_get_hl(0, { name = "MetaphrastWinBorder" })
     assert.equals(0x2dd4bf, border_hl.fg)
 
     package.loaded["snacks"] = nil
@@ -1378,7 +1378,7 @@ describe("ui helper", function()
 
   it("falls back to vim.echo when snacks missing", function()
     package.loaded["snacks"] = nil
-    local ui = require("metafrastis.ui")
+    local ui = require("metaphrast.ui")
     ui._reset_for_tests()
     local original_echo = vim.api.nvim_echo
     local echoed
@@ -1404,7 +1404,7 @@ describe("ui helper", function()
         return { show = function() end }
       end,
     }
-    local ui = require("metafrastis.ui")
+    local ui = require("metaphrast.ui")
     ui._reset_for_tests()
     ui.show_window(
       "hola",
@@ -1432,11 +1432,11 @@ describe("ui helper", function()
         return { show = function() end }
       end,
     }
-    local ui = require("metafrastis.ui")
+    local ui = require("metaphrast.ui")
     ui._reset_for_tests()
 
-    metafrastis._reset_for_tests()
-    metafrastis.setup({
+    metaphrast._reset_for_tests()
+    metaphrast.setup({
       provider = "echo",
       ui = {
         win = {
@@ -1457,8 +1457,8 @@ describe("ui helper", function()
   end)
 
   it("sizes window height for wrapped long lines", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo" })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
 
     local win_opts
     package.loaded["snacks"] = {
@@ -1472,7 +1472,7 @@ describe("ui helper", function()
         return { show = function() end }
       end,
     }
-    local ui = require("metafrastis.ui")
+    local ui = require("metaphrast.ui")
     ui._reset_for_tests()
     ui.set_defaults({})
 
@@ -1494,8 +1494,8 @@ describe("ui helper", function()
   end)
 
   it("does not multiply height when wrap is disabled", function()
-    metafrastis._reset_for_tests()
-    metafrastis.setup({ provider = "echo" })
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
 
     local win_opts
     package.loaded["snacks"] = {
@@ -1509,7 +1509,7 @@ describe("ui helper", function()
         return { show = function() end }
       end,
     }
-    local ui = require("metafrastis.ui")
+    local ui = require("metaphrast.ui")
     ui._reset_for_tests()
     ui.set_defaults({})
 

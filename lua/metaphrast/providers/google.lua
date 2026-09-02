@@ -1,4 +1,4 @@
-local util = require("metafrastis.util")
+local util = require("metaphrast.util")
 
 local M = {}
 
@@ -119,7 +119,7 @@ local function blocked_method_hint(body)
   return table.concat({
     " Hint: Cloud Translation Basic v2 still accepts a Google Cloud API key,",
     " but this project/key is blocked from calling the Translation API.",
-    " Metafrastis prefers ADC automatically when",
+    " Metaphrast prefers ADC automatically when",
     " ~/.config/gcloud/application_default_credentials.json exists;",
     " otherwise use a Cloud Translation-enabled key (prefer",
     " GOOGLE_TRANSLATE_KEY for this provider) and verify the API, billing,",

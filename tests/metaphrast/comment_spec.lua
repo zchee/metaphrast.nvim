@@ -1,4 +1,4 @@
-local comment = require("metafrastis.comment")
+local comment = require("metaphrast.comment")
 
 describe("comment.parse", function()
   it("parses line comment style", function()

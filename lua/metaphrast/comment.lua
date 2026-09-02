@@ -1,11 +1,11 @@
 ---@diagnostic disable: undefined-global
-local util = require("metafrastis.util")
+local util = require("metaphrast.util")
 
----@class MetafrastisCommentParts
+---@class MetaphrastCommentParts
 ---@field prefix string
 ---@field suffix string
 
----@class MetafrastisCommentLineInfo
+---@class MetaphrastCommentLineInfo
 ---@field indent string
 ---@field has_comment boolean
 
@@ -13,7 +13,7 @@ local M = {}
 
 ---Parse a commentstring into prefix/suffix parts.
 ---@param commentstring string|nil
----@return MetafrastisCommentParts|nil
+---@return MetaphrastCommentParts|nil
 function M.parse(commentstring)
   if type(commentstring) ~= "string" then
     return nil
@@ -35,8 +35,8 @@ end
 ---@param lines string[]
 ---@param commentstring string|nil
 ---@return string[] stripped_lines
----@return MetafrastisCommentLineInfo[]|nil info
----@return MetafrastisCommentParts|nil parts
+---@return MetaphrastCommentLineInfo[]|nil info
+---@return MetaphrastCommentParts|nil parts
 function M.strip_lines(lines, commentstring)
   local parsed = M.parse(commentstring)
   if not parsed then
@@ -89,8 +89,8 @@ end
 
 ---Reapply comment leaders to translated lines where they originally existed.
 ---@param translated string|string[]
----@param info MetafrastisCommentLineInfo[]|nil
----@param parts MetafrastisCommentParts|nil
+---@param info MetaphrastCommentLineInfo[]|nil
+---@param parts MetaphrastCommentParts|nil
 ---@return string[]
 function M.reapply(translated, info, parts)
   if not info or not parts then
