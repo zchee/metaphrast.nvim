@@ -401,7 +401,7 @@ describe("comment handling", function()
 
     assert.equals("hello world", last_text)
     assert.truthy(win_opts)
-    assert.equals("hello world <t>", win_opts.text[1])
+    assert.equals(" hello world <t> ", win_opts.text[1])
 
     package.loaded["snacks"] = nil
     require("metaphrast.ui")._reset_for_tests()
@@ -685,7 +685,7 @@ describe("visual selection translation", function()
     })
 
     assert.truthy(win_opts)
-    assert.equals("Hello world [echo]->es", win_opts.text[1])
+    assert.equals(" Hello world [echo]->es ", win_opts.text[1])
 
     package.loaded["snacks"] = nil
     require("metaphrast.ui")._reset_for_tests()
@@ -954,7 +954,7 @@ describe("Snacks.win result window", function()
 
     assert.is_true(done)
     assert.truthy(win_opts)
-    assert.equals("Hello world [echo]->es", win_opts.text[1])
+    assert.equals(" Hello world [echo]->es ", win_opts.text[1])
     assert.equals("cursor", win_opts.relative)
     assert.equals(1, win_opts.row)
     assert.equals(0, win_opts.col)
@@ -1327,7 +1327,7 @@ describe("ui helper", function()
     ui.show_window("ciao", { provider = "echo", cached = true }, { target_lang = "es" })
     assert.truthy(win_opts)
     assert.equals("es · echo · cache", win_opts.title)
-    assert.equals("ciao", win_opts.text[1])
+    assert.equals(" ciao ", win_opts.text[1])
     assert.equals("cursor", win_opts.relative)
     assert.equals(1, win_opts.row)
     assert.equals(0, win_opts.col)
@@ -1388,7 +1388,7 @@ describe("ui helper", function()
     ui.show_window("hello", nil, { target_lang = "fr" })
     vim.api.nvim_echo = original_echo
     assert.truthy(echoed)
-    assert.equals("hello", echoed[1][1])
+    assert.equals(" hello ", echoed[1][1])
   end)
 
   it("allows overriding cursor positioning defaults", function()

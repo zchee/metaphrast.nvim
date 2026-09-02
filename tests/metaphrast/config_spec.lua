@@ -57,6 +57,47 @@ describe("config.defaults", function()
     assert.is_table(d.ui.win)
   end)
 
+  it("has hover window defaults", function()
+    local w = config.defaults().ui.win
+
+    assert.is_nil(w.border)
+    assert.is_nil(w.width)
+    assert.is_nil(w.height)
+    assert.equals(0.6, w.max_width)
+    assert.equals(0.5, w.max_height)
+    assert.is_nil(w.min_width)
+    assert.is_nil(w.min_height)
+    assert.same({ top = 0, bottom = 0, left = 1, right = 1 }, w.padding)
+    assert.equals(1, w.row)
+    assert.equals(0, w.col)
+    assert.equals(0, w.winblend)
+    assert.is_false(w.backdrop)
+    assert.same({}, w.wo)
+    assert.same({}, w.bo)
+  end)
+
+  it("has hover behavior defaults", function()
+    local h = config.defaults().ui.hover
+
+    assert.is_false(h.show_original)
+    assert.is_true(h.footer)
+    assert.is_true(h.render_markdown)
+    assert.equals("link", h.theme)
+    assert.same({ "q", "<Esc>" }, h.keys.close)
+    assert.equals("y", h.keys.yank)
+    assert.equals("r", h.keys.replace)
+    assert.equals("o", h.keys.original)
+    assert.equals("p", h.keys.provider)
+    assert.equals("?", h.keys.help)
+  end)
+
+  it("has notification defaults", function()
+    local n = config.defaults().ui.notify
+
+    assert.equals("󰊿", n.icon)
+    assert.equals(3000, n.timeout)
+  end)
+
   it("returns independent copies", function()
     local a = config.defaults()
     local b = config.defaults()
@@ -140,11 +181,88 @@ describe("config.merge", function()
     assert.is_table(m.providers.deepl)
   end)
 
+  it("merges the user's real ui.win table without loss", function()
+    local border = { "╭", "─", "╮", "│", "╯", "─", "╰", "│" }
+
+    local m = config.merge({
+      ui = {
+        win = {
+          width = 150,
+          border = border,
+          padding = { top = 1, bottom = 1, left = 5, right = 5 },
+          row = 2,
+          col = 1,
+          wo = { wrap = false },
+        },
+      },
+    })
+
+    assert.equals(150, m.ui.win.width)
+    assert.same(border, m.ui.win.border)
+    assert.same({ top = 1, bottom = 1, left = 5, right = 5 }, m.ui.win.padding)
+    assert.equals(2, m.ui.win.row)
+    assert.equals(1, m.ui.win.col)
+    assert.is_false(m.ui.win.wo.wrap)
+    -- Untouched defaults survive the merge.
+    assert.equals(0.6, m.ui.win.max_width)
+    assert.is_false(m.ui.win.backdrop)
+    assert.equals("link", m.ui.hover.theme)
+    assert.equals(3000, m.ui.notify.timeout)
+  end)
+
   it("does not mutate defaults", function()
     local before = config.defaults()
     config.merge({ provider = "deepl", max_chars = 1 })
     local after = config.defaults()
     assert.equals(before.provider, after.provider)
     assert.equals(before.max_chars, after.max_chars)
+  end)
+end)
+
+describe("config.warn_unknown_win_keys", function()
+  local function collector()
+    local seen = {}
+    return seen, function(msg, level)
+      seen[#seen + 1] = { msg = msg, level = level }
+    end
+  end
+
+  before_each(function()
+    config._reset_for_tests()
+  end)
+
+  after_each(function()
+    config._reset_for_tests()
+  end)
+
+  it("reports each unknown key exactly once", function()
+    local seen, notify = collector()
+    local win = { width = 150, zindex = 90, style = "minimal" }
+
+    local first = config.warn_unknown_win_keys(win, notify)
+    local second = config.warn_unknown_win_keys(win, notify)
+
+    assert.same({ "style", "zindex" }, first)
+    assert.same({}, second)
+    assert.equals(2, #seen)
+    assert.equals("warn", seen[1].level)
+    assert.is_true(seen[1].msg:find("style", 1, true) ~= nil)
+    assert.is_true(seen[2].msg:find("zindex", 1, true) ~= nil)
+  end)
+
+  it("stays silent for the documented keys", function()
+    local seen, notify = collector()
+
+    local reported = config.warn_unknown_win_keys(config.defaults().ui.win, notify)
+
+    assert.same({}, reported)
+    assert.equals(0, #seen)
+  end)
+
+  it("ignores a missing ui.win table", function()
+    local seen, notify = collector()
+
+    assert.same({}, config.warn_unknown_win_keys(nil, notify))
+    assert.equals(0, #seen)
   end)
 end)
