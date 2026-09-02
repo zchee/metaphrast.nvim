@@ -387,10 +387,13 @@ end
 ---`sc`/`ec` come from the visual marks, so on a row shorter than the block they
 ---point past the end, and a block whose last row is short yields `ec < sc` —
 ---which would make `sub(1, cstart)` and `sub(cend + 1)` overlap and duplicate
----the bytes between them. Clamping both to the row and keeping `cend >= cstart`
----turns those rows into an empty slice instead. Both ends are then widened to
----whole codepoints so a block over multibyte text never sends a split UTF-8
----sequence to the provider nor writes one back.
+---the bytes between them. Both ends are clamped to the row, and whether the row
+---clamped to nothing is decided *before* either end is widened to a whole
+---codepoint: an emptied region returns `cstart, cstart` (only `cstart` moves,
+---because it is still an insertion point), since letting `cend` widen past it
+---would pull a codepoint back into the region and delete it from the row. A row
+---with content has both ends widened, so a block over multibyte text never
+---sends a split UTF-8 sequence to the provider nor writes one back.
 ---@param line string
 ---@param sc integer 0-indexed start col.
 ---@param ec integer 0-indexed end col (exclusive).

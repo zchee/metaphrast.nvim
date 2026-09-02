@@ -99,12 +99,20 @@ Users who set any of these keys explicitly are unaffected.
   multibyte row of the block. Emptiness is now decided before either end moves.
 - A charwise (`v`) selection ending on a multibyte character was cut one *byte*
   past the mark, handing the provider a broken UTF-8 sequence and splicing the
-  reply into the middle of a character. Both ends of a charwise or blockwise
-  selection are now snapped to codepoint boundaries.
+  reply into the middle of a character. Both ends of a charwise selection are
+  now snapped to codepoint boundaries. Blockwise marks are deliberately left
+  raw: their two columns are shared by every row, so snapping them against the
+  start and end rows widened the block onto text the user never selected on all
+  the others — the per-row resolver already snaps each row for itself.
 - A blockwise selection that clamps to nothing on every row produced a payload
   of newlines only. It was still sent — billing a provider for nothing — and
   the reply was written into a line the user had not selected. A blank
-  selection now returns without calling the provider.
+  selection now returns without calling the provider, and reports the skip
+  instead of finishing with "Translated via …" over an untouched buffer.
+- A provider reply containing a newline crashed a linewise or range write-back
+  with `'replacement string' item contains newlines`, leaving the progress
+  toast hanging. The rendered lines are now flattened before the write, as the
+  blockwise branch already did.
 - The surplus line's indent was measured with `strdisplaywidth` against
   whichever buffer happened to be current (the hover float, on the `r` path),
   so a tab-indented block could be aligned to the wrong `'tabstop'`. It is now

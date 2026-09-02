@@ -228,7 +228,7 @@ With no hover open, `hover()` translates the current line, so one key both trans
 |---|---|
 | `q`, `<Esc>` | Close the hover. |
 | `y` | Yank the translation into `"`, and into `+` when Neovim has clipboard support. Only the translation is yanked — never the original text, never the padding. |
-| `r` | Replace the source range with the translation, re-applying the comment leaders, then close. Refused with an error toast when the source text changed since it was translated. Over a blockwise (`<C-v>`) selection, a translation that wraps to more lines than the block has rows inserts the extra lines below the block, aligned under its left edge. |
+| `r` | Replace the source range with the translation, re-applying the comment leaders, then close. Refused with an error toast when the source text changed since it was translated. Over a blockwise (`<C-v>`) selection, a translation that wraps to more lines than the block has rows inserts the extra lines below the block, aligned under its left edge; a reply that would insert more than `max_inserted_lines` (default 200) is refused with an error toast rather than truncated, and the hover stays open. |
 | `o` | Toggle the original text (対訳) above the translation in the same window. |
 | `p` | Pick another provider and retranslate; the result replaces the hover contents. When the retranslation fails, the progress toast is hidden, the error arrives as a separate toast, and the hover is focused again. Cancelling the picker also refocuses the hover. |
 | `?` | Toggle the key-hint help window. |
