@@ -362,6 +362,32 @@ local function get_visual_positions(bufnr, mode)
   return sr, sc, er, ec
 end
 
+---Resolve a blockwise selection's columns against one row.
+---
+---`sc`/`ec` come from the visual marks, so on a row shorter than the block they
+---point past the end, and a block whose last row is short yields `ec < sc` —
+---which would make `sub(1, cstart)` and `sub(cend + 1)` overlap and duplicate
+---the bytes between them. Clamping both to the row and keeping `cend >= cstart`
+---turns those rows into an empty slice instead. Both ends are then widened to
+---whole codepoints so a block over multibyte text never sends a split UTF-8
+---sequence to the provider nor writes one back.
+---@param line string
+---@param sc integer 0-indexed start col.
+---@param ec integer 0-indexed end col (exclusive).
+---@return integer cstart 0-indexed byte offset where the block starts.
+---@return integer cend 0-indexed byte offset just past the block's last byte.
+local function block_columns(line, sc, ec)
+  local cstart = math.min(sc, #line)
+  local cend = math.max(math.min(ec, #line), cstart)
+  if cstart > 0 and cstart < #line then
+    cstart = cstart + vim.str_utf_start(line, cstart + 1)
+  end
+  if cend > 0 and cend < #line then
+    cend = cend + vim.str_utf_end(line, cend)
+  end
+  return cstart, cend
+end
+
 ---Extract selected lines from a buffer based on visual mode and positions.
 ---Returns the lines as an array so callers can perform per-line processing
 ---(e.g. commentstring stripping) before joining.
@@ -386,8 +412,7 @@ local function extract_selection_lines(bufnr, mode, sr, sc, er, ec)
   if block then
     local parts = {}
     for _, line in ipairs(lines) do
-      local cstart = math.min(sc, #line)
-      local cend = math.min(ec, #line)
+      local cstart, cend = block_columns(line, sc, ec)
       table.insert(parts, line:sub(cstart + 1, cend))
     end
     return parts
@@ -407,6 +432,14 @@ local function extract_selection_lines(bufnr, mode, sr, sc, er, ec)
 end
 
 ---Replace the selected text in a buffer.
+---
+---A blockwise replacement can render more lines than the block has rows: the
+---comment layout re-wraps the merged paragraph to the block's width. Those
+---surplus lines are appended to the same `nvim_buf_set_lines` call, so they land
+---directly under the block in one undo step instead of being dropped. Each one
+---is indented to the block's left edge: verbatim when the text left of the block
+---is whitespace (tabs and indent style survive), otherwise spaces of the same
+---display width, because copying code from the left would duplicate a statement.
 ---@param bufnr integer
 ---@param mode string
 ---@param sr integer 0-indexed start row.
@@ -425,11 +458,21 @@ local function replace_selection_text(bufnr, mode, sr, sc, er, ec, replacement)
   local block = (mode == "\22" or mode == "")
   if block then
     local buf_lines = vim.api.nvim_buf_get_lines(bufnr, sr, er + 1, false)
+    local rows = #buf_lines
+    -- Captured before the loop rewrites it, so the pad reflects the source row.
+    local last_line = buf_lines[rows] or ""
     for i, line in ipairs(buf_lines) do
-      local cstart = math.min(sc, #line)
-      local cend = math.min(ec, #line)
+      local cstart, cend = block_columns(line, sc, ec)
       local rep = rep_lines[i] or ""
       buf_lines[i] = line:sub(1, cstart) .. rep .. line:sub(cend + 1)
+    end
+    if #rep_lines > rows then
+      local cstart = block_columns(last_line, sc, ec)
+      local left = last_line:sub(1, cstart)
+      local pad = left:match("%S") and string.rep(" ", vim.fn.strdisplaywidth(left)) or left
+      for i = rows + 1, #rep_lines do
+        buf_lines[#buf_lines + 1] = pad .. rep_lines[i]
+      end
     end
     vim.api.nvim_buf_set_lines(bufnr, sr, er + 1, false, buf_lines)
     return

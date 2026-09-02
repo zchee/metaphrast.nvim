@@ -759,6 +759,171 @@ describe("visual selection translation", function()
   end)
 end)
 
+describe("blockwise replace", function()
+  before_each(function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+  end)
+
+  ---Open a scratch buffer holding `buf_lines` with the visual marks a
+  ---blockwise selection reads.
+  ---@param buf_lines string[]
+  ---@param commentstring string
+  ---@param start_row integer 1-indexed
+  ---@param start_col integer 0-indexed
+  ---@param end_row integer 1-indexed
+  ---@param end_col integer 0-indexed, inclusive
+  ---@return integer bufnr
+  local function block_buffer(buf_lines, commentstring, start_row, start_col, end_row, end_col)
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_set_current_buf(bufnr)
+    vim.bo[bufnr].commentstring = commentstring
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, buf_lines)
+    vim.api.nvim_buf_set_mark(bufnr, "<", start_row, start_col, {})
+    vim.api.nvim_buf_set_mark(bufnr, ">", end_row, end_col, {})
+    return bufnr
+  end
+
+  ---Register a provider that records the text it was handed.
+  ---@param name string
+  ---@param reply fun(text: string): string
+  ---@return fun(): string|nil captured
+  local function capturing_provider(name, reply)
+    local captured
+    registry.register(name, {
+      translate = function(_, payload)
+        captured = payload.text
+        return reply(payload.text)
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metaphrast.config.provider = name
+    return function()
+      return captured
+    end
+  end
+
+  it("AC1: inserts the surplus wrapped line under the block instead of dropping it", function()
+    local original = { "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }
+    local bufnr = block_buffer(original, "// %s", 1, 2, 2, 15)
+    -- Headless Neovim never returns to the main loop between the seed and the
+    -- write, so both would land in one undo block; this breaks the sequence the
+    -- way returning for input does, making the undo assertion meaningful.
+    vim.bo[bufnr].undolevels = vim.bo[bufnr].undolevels
+    local seq_before = vim.fn.undotree().seq_cur
+
+    local translated, applied = metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    assert.equals("hello there second line [echo]->es", translated)
+    assert.is_true(applied)
+    assert.same({
+      "  // hello there  TAIL1",
+      "  // second line  TAIL2",
+      "  // [echo]->es",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    -- The whole replacement is one undo step, surplus line included.
+    assert.equals(seq_before + 1, vim.fn.undotree().seq_cur)
+    vim.cmd("silent undo")
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC3: pads the surplus line with spaces when code sits left of the block", function()
+    local bufnr = block_buffer({ "foo(); // alpha beta", "bar(); // gamma delta", "baz();" }, "// %s", 1, 7, 2, 20)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- Seven spaces, not a second `bar();`: copying the left part verbatim would
+    -- inject a duplicate statement into the user's code.
+    assert.same({
+      "foo(); // alpha beta",
+      "bar(); // gamma delta",
+      "       // [echo]->es",
+      "baz();",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC4: clamps the columns when the block ends on a row shorter than its start", function()
+    local captured = capturing_provider("block_short_row", function(text)
+      return text .. " [cap]"
+    end)
+    local bufnr = block_buffer({ "    // alpha beta gamma", "ab" }, "// %s", 1, 4, 2, 22)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- `'>` lands before `'<` on the short last row, so both slices are empty.
+    -- No buffer bytes leak into the payload, and row 1 keeps its single indent
+    -- instead of having the region between the two columns re-emitted.
+    assert.equals("\n", captured())
+    assert.same({ "    // alpha beta gamma", "ab [cap]" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC5: keeps a multibyte block on codepoint boundaries", function()
+    local captured = capturing_provider("block_multibyte", function(text)
+      return text .. " [echo]->es"
+    end)
+    -- Column 16 falls inside the third byte of `の`.
+    local bufnr = block_buffer({ "  // 日本語のテスト", "  // second line", "x := 1" }, "// %s", 1, 2, 2, 15)
+
+    local translated = metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    assert.equals("日本語の second line", captured())
+    assert.is_nil(
+      translated:find("\239\191\189", 1, true),
+      "translation carries a replacement character: " .. translated
+    )
+    assert.same({
+      "  // 日本語のテスト",
+      "  // second line",
+      "  // [echo]->es",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC6: clamps a $-extended block to each row", function()
+    local bufnr =
+      block_buffer({ "  // hello there", "  // second line longer", "x := 1" }, "// %s", 1, 2, 2, 2147483646)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    assert.same({
+      "  // hello there second",
+      "  // line longer",
+      "  // [echo]->es",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC7: blanks the block region on rows the rendered lines do not reach", function()
+    capturing_provider("block_one_word", function()
+      return "uno"
+    end)
+    local rows = { "  // aaa bbb  T1", "  // ccc ddd  T2", "  // eee fff  T3", "z()" }
+    local bufnr = block_buffer(rows, "// %s", 1, 2, 3, 12)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- Frozen behavior: content moves up and rows 2-3 lose their leaders, keeping
+    -- only the text right of the block. Asserted so the trade-off stays visible.
+    assert.same({ "  // uno T1", "   T2", "   T3", "z()" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC8: never grows a leaderless block", function()
+    local bufnr = block_buffer({ "  hello there", "  second line", "x := 1" }, "", 1, 2, 2, 12)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- Without comment structure the layout path is skipped and reflow_lines
+    -- always returns exactly as many lines as it was given, so no line is added.
+    assert.same(
+      { "  hello there", "  second line [echo]->es", "x := 1" },
+      vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    )
+  end)
+end)
+
 describe("ui helper", function()
   local ui = require("metaphrast.ui")
   local notifier

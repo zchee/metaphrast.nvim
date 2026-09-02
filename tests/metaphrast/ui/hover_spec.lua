@@ -970,6 +970,25 @@ describe("hover integration", function()
     assert.same(expected, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 
+  it("AC2: keeps the wrapped surplus line when r replaces a blockwise comment selection", function()
+    -- The block covers the `// ` column, so the two rows merge into one
+    -- paragraph and re-wrap to three lines — one more than the block has rows.
+    local bufnr = open_buffer({ "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }, "// %s")
+    set_visual_marks(bufnr, 1, 2, 2, 15)
+    translate_selection_open(bufnr, "\22", "es")
+    metaphrast.hover()
+
+    vim.api.nvim_feedkeys("r", "x", false)
+
+    assert.equals("hidden", hover.debug().state)
+    assert.same({
+      "  // hello there  TAIL1",
+      "  // second line  TAIL2",
+      "  // [echo]->es",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
   it("AC8: reports a refused write-back as an error on the progress id", function()
     local bufnr = open_buffer({ "Hello world" })
     local before = stamp(progress_entry())
