@@ -842,6 +842,10 @@ function M.show(source, result, opts)
   end
   instance.win = win
   instance.buf = win.buf
+  -- The constructor set the filetype once. Dropping it from `opts.bo` keeps
+  -- every later `win:update()` from re-firing `FileType` (treesitter,
+  -- render-markdown and user ftplugins) on the same buffer.
+  win.opts.bo.filetype = nil
   instance.state = "shown"
   register_source_autocmds()
   register_hover_autocmds()
