@@ -110,8 +110,8 @@ require("metaphrast").setup({
 
 If a configured provider is missing credentials, `setup()` warns and falls back to the built-in `echo` provider so you can test locally without making paid calls. A later request for a provider that is still unusable (for example after `p` in the hover) fails with an error toast instead of silently switching.
 
-For the `google` backend, prefer a Cloud Translation-specific key in
-`GOOGLE_TRANSLATE_KEY`. `GOOGLE_API_KEY` remains a fallback, but it is often
+For the `google` and `google_llm` backends, prefer a Cloud Translation-specific
+key in `GOOGLE_TRANSLATE_KEY`. `GOOGLE_API_KEY` remains a fallback, but it is often
 shared with other Google services in local setups and may be restricted in ways
 that block Cloud Translation.
 

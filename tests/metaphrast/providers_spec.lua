@@ -76,7 +76,7 @@ describe("google provider", function()
 
   after_each(function()
     google._reset_for_tests()
-    if adc_path and (vim.uv or vim.loop).fs_stat(adc_path) then
+    if adc_path and vim.uv.fs_stat(adc_path) then
       vim.fn.delete(adc_path)
     end
   end)
@@ -381,6 +381,41 @@ describe("google provider", function()
     end)
   end)
 
+  it("falls back to the ADC quota project when gcp_project_id is an empty string", function()
+    vim.fn.writefile({
+      vim.json.encode({
+        type = "authorized_user",
+        client_id = "cid",
+        client_secret = "secret",
+        refresh_token = "refresh",
+        quota_project_id = "quota-proj",
+      }),
+    }, adc_path)
+    local captured_headers
+    local mock_http = function(_, url, opts)
+      if url == "https://oauth2.googleapis.com/token" then
+        return {
+          code = 0,
+          stdout = vim.json.encode({ access_token = "adc-access-token", expires_in = 3600 }),
+        }
+      end
+      captured_headers = opts.headers
+      return {
+        code = 0,
+        stdout = vim.json.encode({ data = { translations = { { translatedText = "translated" } } } }),
+      }
+    end
+    local payload = make_payload("hello", "google", {
+      adc_path = adc_path,
+      gcp_project_id = "",
+      base_url = "https://example.com",
+    })
+
+    google.translate(mock_http, payload)
+
+    assert.is_truthy(vim.tbl_contains(captured_headers, "x-goog-user-project: quota-proj"))
+  end)
+
   it("caches the ADC access token and drops it on reset", function()
     vim.fn.writefile({
       vim.json.encode({
@@ -650,6 +685,105 @@ describe("google_llm provider", function()
 
     assert.is_false(ok)
     assert.is_truthy(tostring(err):find("unexpected payload", 1, true))
+  end)
+
+  it("errors on an unexpected v3 payload", function()
+    write_adc("quota-project")
+    local calls = {}
+    local mock_http = adc_http(calls, { code = 0, http_status = 200, stdout = "{}" })
+    local payload = make_payload("hi", "google_llm", { adc_path = adc_path, gcp_project_id = "proj" })
+
+    local ok, err = pcall(google_llm.translate, mock_http, payload)
+
+    assert.is_false(ok)
+    assert.is_truthy(tostring(err):find("unexpected payload", 1, true))
+  end)
+
+  it("errors on invalid JSON instead of raising a decode error", function()
+    local mock_http = function()
+      return { code = 0, http_status = 200, stdout = "not json" }
+    end
+    local payload = make_payload("hi", "google_llm", {
+      api_key = "k",
+      adc_path = adc_path,
+      gcp_project_id = "proj",
+    })
+
+    local ok, err = pcall(google_llm.translate, mock_http, payload)
+
+    assert.is_false(ok)
+    assert.is_truthy(tostring(err):find("invalid JSON", 1, true))
+  end)
+
+  it("labels ADC failures with its own provider name", function()
+    write_adc("quota-project")
+    local mock_http = function(_, url)
+      if url == "https://oauth2.googleapis.com/token" then
+        return { code = 0, http_status = 401, stdout = "unauthorized" }
+      end
+      return v3_ok
+    end
+    local payload = make_payload("hi", "google_llm", { adc_path = adc_path, gcp_project_id = "proj" })
+
+    local ok, err = pcall(google_llm.translate, mock_http, payload)
+
+    assert.is_false(ok)
+    assert.is_truthy(tostring(err):find("google_llm ADC token refresh failed (HTTP 401)", 1, true))
+    assert.is_nil(tostring(err):find("google ADC", 1, true))
+  end)
+
+  it("appends the blocked-method hint on the v2 403 the google backend explains", function()
+    local mock_http = function()
+      return {
+        code = 0,
+        http_status = 403,
+        stdout = '{"error":{"message":"Requests to this API translate method '
+          .. 'google.cloud.translate.v2.TranslateService.TranslateText are blocked."}}',
+      }
+    end
+    local payload = make_payload("hi", "google_llm", {
+      api_key = "k",
+      adc_path = adc_path,
+      gcp_project_id = "proj",
+    })
+
+    local ok, err = pcall(google_llm.translate, mock_http, payload)
+
+    assert.is_false(ok)
+    assert.is_truthy(tostring(err):find("HTTP 403", 1, true))
+    assert.is_truthy(tostring(err):find("Hint: Cloud Translation Basic v2", 1, true))
+  end)
+
+  it("shares the ADC access token with the google backend", function()
+    write_adc("quota-project")
+    local token_calls = 0
+    local mock_http = function(_, url)
+      if url == "https://oauth2.googleapis.com/token" then
+        token_calls = token_calls + 1
+        return {
+          code = 0,
+          stdout = vim.json.encode({ access_token = "adc-access-token", expires_in = 3600 }),
+        }
+      end
+      if url:find("/v3/", 1, true) then
+        return v3_ok
+      end
+      return {
+        code = 0,
+        http_status = 200,
+        stdout = vim.json.encode({ data = { translations = { { translatedText = "translated" } } } }),
+      }
+    end
+    local llm_payload = make_payload("hello", "google_llm", { adc_path = adc_path, gcp_project_id = "proj" })
+    local nmt_payload = make_payload("hello", "google", { adc_path = adc_path, base_url = "https://example.com" })
+
+    google.translate(mock_http, nmt_payload)
+    google_llm.translate(mock_http, llm_payload)
+    assert.equals(1, token_calls)
+
+    google_llm._reset_for_tests()
+    google.translate(mock_http, nmt_payload)
+    assert.equals(2, token_calls)
   end)
 
   it("estimates cost from input plus estimated output characters", function()

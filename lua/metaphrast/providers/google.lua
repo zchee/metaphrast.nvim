@@ -30,26 +30,6 @@ local function resolve_google_auth(cfg, _http)
   }
 end
 
----@param body string|nil
----@return string|nil
-local function blocked_method_hint(body)
-  if not body or body == "" then
-    return nil
-  end
-  if not body:find("TranslateService.TranslateText are blocked", 1, true) then
-    return nil
-  end
-  return table.concat({
-    " Hint: Cloud Translation Basic v2 still accepts a Google Cloud API key,",
-    " but this project/key is blocked from calling the Translation API.",
-    " Metaphrast prefers ADC automatically when",
-    " ~/.config/gcloud/application_default_credentials.json exists;",
-    " otherwise use a Cloud Translation-enabled key (prefer",
-    " GOOGLE_TRANSLATE_KEY for this provider) and verify the API, billing,",
-    " and key restrictions are correct.",
-  })
-end
-
 function M.validate(cfg)
   if gcp_auth.file_exists(cfg.adc_path) then
     local ok, credentials = pcall(gcp_auth.load_adc_credentials, cfg.adc_path)
@@ -87,7 +67,7 @@ function M.translate(_http, payload)
   end
   if res.http_status and res.http_status >= 400 then
     local message = "google translate failed (HTTP " .. res.http_status .. "): " .. (res.stdout or "")
-    local hint = res.http_status == 403 and blocked_method_hint(res.stdout) or nil
+    local hint = res.http_status == 403 and gcp_auth.blocked_method_hint(res.stdout) or nil
     error(message .. (hint or ""))
   end
   local parsed = vim.json.decode(res.stdout)

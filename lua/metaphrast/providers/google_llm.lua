@@ -49,7 +49,7 @@ end
 function M.validate(cfg)
   local credentials
   if gcp_auth.file_exists(cfg.adc_path) then
-    local ok, loaded = pcall(gcp_auth.load_adc_credentials, cfg.adc_path)
+    local ok, loaded = pcall(gcp_auth.load_adc_credentials, cfg.adc_path, M.name)
     if not ok then
       return false, tostring(loaded)
     end
@@ -78,12 +78,12 @@ function M.translate(_http, payload)
   local url, headers, body, use_adc
   if gcp_auth.file_exists(cfg.adc_path) then
     use_adc = true
-    local credentials = gcp_auth.load_adc_credentials(cfg.adc_path)
+    local credentials = gcp_auth.load_adc_credentials(cfg.adc_path, M.name)
     local project_id = gcp_auth.resolve_project_id(cfg, credentials)
     if not project_id then
       error("google_llm provider requires gcp_project_id (or an ADC quota_project_id)")
     end
-    local access_token = gcp_auth.refresh_access_token(_http, cfg.adc_path)
+    local access_token = gcp_auth.refresh_access_token(_http, cfg.adc_path, M.name)
     url = string.format("%s/projects/%s/locations/%s:translateText", cfg.base_url, project_id, location)
     headers = {
       "Authorization: Bearer " .. access_token,
@@ -128,7 +128,9 @@ function M.translate(_http, payload)
     error("google_llm translate failed: " .. (res.stderr or "curl error code " .. res.code))
   end
   if res.http_status and res.http_status >= 400 then
-    error("google_llm translate failed (HTTP " .. res.http_status .. "): " .. (res.stdout or ""))
+    local message = "google_llm translate failed (HTTP " .. res.http_status .. "): " .. (res.stdout or "")
+    local hint = res.http_status == 403 and gcp_auth.blocked_method_hint(res.stdout) or nil
+    error(message .. (hint or ""))
   end
 
   local ok, parsed = pcall(vim.json.decode, res.stdout)
