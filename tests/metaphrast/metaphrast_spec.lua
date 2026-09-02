@@ -1026,6 +1026,35 @@ describe("blockwise replace", function()
       assert.equals(want_end, cend, label .. " (cend)")
     end
   end)
+
+  it("AC15: snaps the start column back on a row that is not the block's first", function()
+    local captured = capturing_provider("block_mid_codepoint", function(text)
+      return text .. " [cap]"
+    end)
+    -- `sc = 2` is a codepoint boundary on row 1 but the second byte of `日` on
+    -- row 2, so only the per-row snap keeps that slice whole.
+    local bufnr = block_buffer({ "  hello there", " 日本語のテスト" }, "", 1, 2, 2, 21)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    assert.equals("hello there\n日本語のテスト", captured())
+    assert.same({ "  hello there", " 日本語のテスト [cap]" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC16: keeps a tab indent verbatim on the surplus line", function()
+    local bufnr = block_buffer({ "\t// hello there  TAIL1", "\t// second line  TAIL2", "x := 1" }, "// %s", 1, 1, 2, 14)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- The text left of the block is whitespace, so it is copied as-is and the
+    -- inserted line keeps the file's indent style rather than expanding it.
+    assert.same({
+      "\t// hello there  TAIL1",
+      "\t// second line  TAIL2",
+      "\t// [echo]->es",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
 end)
 
 describe("charwise replace", function()

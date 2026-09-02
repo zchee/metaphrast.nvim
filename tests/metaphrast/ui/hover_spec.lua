@@ -970,7 +970,7 @@ describe("hover integration", function()
     assert.same(expected, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 
-  it("AC2: keeps the wrapped surplus line when r replaces a blockwise comment selection", function()
+  it("blockwise AC2: keeps the wrapped surplus line when r replaces a blockwise comment selection", function()
     -- The block covers the `// ` column, so the two rows merge into one
     -- paragraph and re-wrap to three lines — one more than the block has rows.
     local bufnr = open_buffer({ "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }, "// %s")
