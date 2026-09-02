@@ -195,6 +195,7 @@ the window lands.
 - `:MetaphrastTranslate [source] [target]`
   - Operates on the given range (default current line).
   - Use `!` to replace buffer text; otherwise the translation opens in the hover window.
+  - Replacing a blockwise (`<C-v>`) selection can produce more lines than the block has rows, because the selected comment rows are translated as one paragraph and re-wrapped. The extra lines are inserted directly below the block, aligned under its left edge, in the same undo step.
   - Prompts for the target language when omitted (`snacks.input`).
   - Runs asynchronously; progress and the final message share one notifier toast.
   - Called without a range while a hover is already open for the current buffer, it focuses that hover instead of translating again.
@@ -226,7 +227,7 @@ With no hover open, `hover()` translates the current line, so one key both trans
 |---|---|
 | `q`, `<Esc>` | Close the hover. |
 | `y` | Yank the translation into `"`, and into `+` when Neovim has clipboard support. Only the translation is yanked — never the original text, never the padding. |
-| `r` | Replace the source range with the translation, re-applying the comment leaders, then close. Refused with an error toast when the source text changed since it was translated. |
+| `r` | Replace the source range with the translation, re-applying the comment leaders, then close. Refused with an error toast when the source text changed since it was translated. Over a blockwise (`<C-v>`) selection, a translation that wraps to more lines than the block has rows inserts the extra lines below the block, aligned under its left edge. |
 | `o` | Toggle the original text (対訳) above the translation in the same window. |
 | `p` | Pick another provider and retranslate; the result replaces the hover contents. When the retranslation fails, the progress toast is hidden, the error arrives as a separate toast, and the hover is focused again. Cancelling the picker also refocuses the hover. |
 | `?` | Toggle the key-hint help window. |

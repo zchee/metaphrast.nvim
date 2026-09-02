@@ -73,3 +73,19 @@ Users who set any of these keys explicitly are unaffected.
   snacks-only.
 - Per-call window overrides (`opts.win`); `ui.win` from `setup()` is the only
   source of window configuration.
+
+### Fixed
+
+- Blockwise (`<C-v>`) replacements no longer drop content. A block over the
+  comment column merges into one paragraph and can re-wrap to more lines than
+  the block has rows; those surplus lines were written past the end of the loop
+  and lost, so an `echo`-provider run could report success with a byte-identical
+  buffer. They are now inserted directly below the block in the same write —
+  one undo step — indented to the block's left edge, with spaces rather than a
+  copy of any code to the left of it.
+- A blockwise selection whose last row is shorter than the block's start column
+  yields `'>` before `'<`; the two slices then overlapped and re-emitted the
+  bytes between them on every row. Both columns are now clamped per row.
+- A block over multibyte text could cut a UTF-8 sequence in half, sending
+  invalid bytes to the provider and writing them back. Both column ends are now
+  widened to whole codepoints.
