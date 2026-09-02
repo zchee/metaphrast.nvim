@@ -446,17 +446,17 @@ local function is_partial_selection(source)
   return source.mode ~= nil and source.mode ~= "V"
 end
 
----Write a translation back over the region described by `source`.
----The region is re-read and compared with the lines that were translated;
----on a mismatch nothing is written and an error toast explains why.
+---Write a translation back over the region described by `source`, or explain
+---why not. The region is re-read and compared with the lines that were
+---translated; on a mismatch nothing is written.
 ---@param source MetaphrastHoverSource
 ---@param translated string
 ---@return boolean replaced
-function M.apply_result(source, translated)
+---@return string|nil reason User-facing message when nothing was written.
+local function try_apply(source, translated)
   local buffer = source and source.buf
   if not (buffer and vim.api.nvim_buf_is_valid(buffer)) then
-    ui.notify("metaphrast: source buffer is gone; translation not applied", "error")
-    return false
+    return false, "metaphrast: source buffer is gone; translation not applied"
   end
   local current
   if is_partial_selection(source) then
@@ -465,8 +465,7 @@ function M.apply_result(source, translated)
     current = vim.api.nvim_buf_get_lines(buffer, source.sr, source.er + 1, false)
   end
   if not vim.deep_equal(current, source.lines) then
-    ui.notify("metaphrast: source text changed since it was translated; translation not applied", "error")
-    return false
+    return false, "metaphrast: source text changed since it was translated; translation not applied"
   end
   local out_lines = render_replacement(analyze_lines(source.lines, source.commentstring), translated)
   if is_partial_selection(source) then
@@ -485,21 +484,42 @@ function M.apply_result(source, translated)
   return true
 end
 
+---Write a translation back over the region described by `source`.
+---The region is re-read and compared with the lines that were translated;
+---on a mismatch nothing is written and an error toast explains why.
+---@param source MetaphrastHoverSource
+---@param translated string
+---@return boolean replaced
+function M.apply_result(source, translated)
+  local ok, reason = try_apply(source, translated)
+  if not ok then
+    ---@cast reason string
+    ui.notify(reason, "error")
+  end
+  return ok
+end
+
 ---Deliver a finished translation: replace the source, show the hover, or
----echo it, depending on `opts`.
+---echo it, depending on `opts`. A refused write-back is not reported here;
+---the caller finishes its own progress toast with `reason`.
 ---@param source MetaphrastHoverSource
 ---@param translated string
 ---@param meta table|nil
 ---@param analysis table
 ---@param opts table|nil
 ---@return string rendered
+---@return boolean|nil applied True when written back, false when refused, nil when no write-back was requested.
+---@return string|nil reason Why the write-back was refused.
 local function deliver(source, translated, meta, analysis, opts)
-  local should_replace = opts and opts.replace or M.config.replace
+  local should_replace = opts and opts.replace
+  if should_replace == nil then
+    should_replace = M.config.replace
+  end
   local result = build_result(translated, meta, analysis, opts)
   local rendered = table.concat(result.display_lines, "\n")
   if should_replace then
-    M.apply_result(source, translated)
-    return analysis.layout and translated or rendered
+    local applied, reason = try_apply(source, translated)
+    return analysis.layout and translated or rendered, applied, reason
   end
   if opts and opts.show_window then
     present(source, result, {})
@@ -521,22 +541,26 @@ end
 ---@param start_line integer
 ---@param end_line integer
 ---@param opts table|nil
----@return string
+---@return string rendered
+---@return boolean|nil applied False when a requested write-back was refused.
+---@return string|nil reason Why the write-back was refused.
 function M.translate_range(bufnr, start_line, end_line, opts)
   local buffer = resolve_buffer(bufnr)
   local lines = vim.api.nvim_buf_get_lines(buffer, start_line, end_line, false)
   local source = capture_source(buffer, nil, start_line, nil, start_line + #lines - 1, nil, lines)
   local analysis = analyze_lines(lines, source.commentstring)
   local translated, meta = M.translate(analysis.text, opts)
-  local rendered = deliver(source, translated, meta, analysis, opts)
-  return rendered or translated
+  local rendered, applied, reason = deliver(source, translated, meta, analysis, opts)
+  return rendered or translated, applied, reason
 end
 
 ---Translate visually selected text.
 ---@param bufnr integer|nil
 ---@param mode string Visual mode: "v", "V", or "\22".
 ---@param opts table|nil
----@return string
+---@return string translated
+---@return boolean|nil applied False when a requested write-back was refused.
+---@return string|nil reason Why the write-back was refused.
 function M.translate_selection(bufnr, mode, opts)
   local buffer = resolve_buffer(bufnr)
   local sr, sc, er, ec = get_visual_positions(buffer, mode)
@@ -548,15 +572,17 @@ function M.translate_selection(bufnr, mode, opts)
   end
 
   local translated, meta = M.translate(analysis.text, opts)
-  deliver(source, translated, meta, analysis, opts)
-  return translated
+  local _, applied, reason = deliver(source, translated, meta, analysis, opts)
+  return translated, applied, reason
 end
 
 ---Translate visually selected text asynchronously.
+---`on_success` receives `applied = false` and the reason when a requested
+---write-back was refused.
 ---@param bufnr integer|nil
 ---@param mode string Visual mode: "v", "V", or "\22".
 ---@param opts table|nil
----@param callbacks {on_success?:fun(result:string, meta:table), on_error?:fun(err:any)}|nil
+---@param callbacks {on_success?:fun(result:string, meta:table, applied?:boolean, reason?:string), on_error?:fun(err:any)}|nil
 function M.translate_selection_async(bufnr, mode, opts, callbacks)
   local buffer = resolve_buffer(bufnr)
   local sr, sc, er, ec = get_visual_positions(buffer, mode)
@@ -575,9 +601,9 @@ function M.translate_selection_async(bufnr, mode, opts, callbacks)
 
   M.translate_async(analysis.text, opts, {
     on_success = function(translated, meta)
-      deliver(source, translated, meta, analysis, opts)
+      local _, applied, reason = deliver(source, translated, meta, analysis, opts)
       if cb.on_success then
-        cb.on_success(translated, meta)
+        cb.on_success(translated, meta, applied, reason)
       end
     end,
     on_error = function(err)
@@ -636,12 +662,17 @@ function M.hover()
     return
   end
   local line = vim.api.nvim_win_get_cursor(0)[1]
-  M.command({ range = 0, line1 = line, line2 = line, fargs = {}, bang = false })
+  -- A hover key never writes into the buffer, whatever `config.replace` says.
+  M.command({ range = 0, line1 = line, line2 = line, fargs = {}, bang = false, replace = false })
 end
 
----@param opts table command opts
+---Run a translation from `:MetaphrastTranslate` or `hover()`.
+---Without a range and with a hover already open for the buffer it focuses
+---that hover, unless the bang asks for a write-back. `opts.replace`, when
+---given, overrides both the bang and `config.replace`.
+---@param opts table Command opts (`range`, `line1`, `line2`, `fargs`, `bang`, `visual_mode`) plus `replace`.
 function M.command(opts)
-  if (opts.range or 0) == 0 and hover.is_open_for(0) then
+  if (opts.range or 0) == 0 and not opts.bang and hover.is_open_for(0) then
     hover.focus()
     return
   end
@@ -655,7 +686,10 @@ function M.command(opts)
     target = args[2]
   end
 
-  local replace = opts.bang or M.config.replace
+  local replace = opts.replace
+  if replace == nil then
+    replace = opts.bang or M.config.replace
+  end
   local vmode = opts.visual_mode
   local start_line = (opts.line1 or 1) - 1
   local end_line = opts.line2 or vim.api.nvim_buf_line_count(0)
@@ -673,7 +707,11 @@ function M.command(opts)
       show_window = not replace,
     }
     local callbacks = {
-      on_success = function(_, meta)
+      on_success = function(_, meta, applied, reason)
+        if applied == false then
+          done(reason, "error")
+          return
+        end
         local provider = meta and meta.provider or M.config.provider
         local suffix = meta and meta.cached and " (cache)" or ""
         done(string.format("Translated via %s%s", provider, suffix), "info")
@@ -745,11 +783,13 @@ function M.translate_async(text, opts, callbacks)
   end)()
 end
 
+---Translate a line range asynchronously. `on_success` receives
+---`applied = false` and the reason when a requested write-back was refused.
 ---@param bufnr integer|nil
 ---@param start_line integer
 ---@param end_line integer
 ---@param opts table|nil
----@param callbacks {on_success?:fun(result:string, meta:table), on_error?:fun(err:any)}|nil
+---@param callbacks {on_success?:fun(result:string, meta:table, applied?:boolean, reason?:string), on_error?:fun(err:any)}|nil
 function M.translate_range_async(bufnr, start_line, end_line, opts, callbacks)
   local buffer = resolve_buffer(bufnr)
   local lines = vim.api.nvim_buf_get_lines(buffer, start_line, end_line, false)
@@ -758,9 +798,9 @@ function M.translate_range_async(bufnr, start_line, end_line, opts, callbacks)
   local cb = callbacks or {}
   M.translate_async(analysis.text, opts, {
     on_success = function(translated, meta)
-      local rendered = deliver(source, translated, meta, analysis, opts)
+      local rendered, applied, reason = deliver(source, translated, meta, analysis, opts)
       if cb.on_success then
-        cb.on_success(rendered or translated, meta)
+        cb.on_success(rendered or translated, meta, applied, reason)
       end
     end,
     on_error = function(err)
