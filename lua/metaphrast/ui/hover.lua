@@ -68,6 +68,33 @@ local PARTIAL_BORDERS = {
   vpad = { 2, 0 },
 }
 
+local SOURCE_GROUP = "MetaphrastHoverSource"
+local HOVER_GROUP = "MetaphrastHover"
+
+local function new_instance()
+  return {
+    state = "hidden",
+    win = nil,
+    buf = nil,
+    source = nil,
+    result = nil,
+    cfg = nil,
+    border = nil,
+    content = nil,
+    geometry = nil,
+    original_visible = false,
+    frozen_below = nil,
+    close_count = 0,
+    last_error = nil,
+    closing_event = nil,
+    source_group = nil,
+    hover_group = nil,
+    measure_gen = 0,
+  }
+end
+
+local instance = new_instance()
+
 local function clamp(n, lo, hi)
   return math.max(lo, math.min(n, hi))
 end
@@ -86,6 +113,19 @@ local function max_display_width(lines)
     width = math.max(width, vim.fn.strdisplaywidth(line))
   end
   return width
+end
+
+local function is_visual_or_select_mode(mode)
+  return mode == "v" or mode == "V" or mode == "\22" or mode == "s" or mode == "S" or mode == "\19"
+end
+
+---Leave visual/select mode after cursor movement dismissed the hover.
+local function leave_visual_or_select_mode()
+  if not is_visual_or_select_mode(vim.fn.mode()) then
+    return
+  end
+  local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
+  vim.api.nvim_feedkeys(esc, "nx", false)
 end
 
 -- Pure builders -------------------------------------------------------------
@@ -455,6 +495,525 @@ function M.geometry_ctx(source, extra)
     virt_rows = extra.virt_rows or 0,
     measured_text_height = extra.measured_text_height,
   }
+end
+
+-- State machine -------------------------------------------------------------
+
+local function ui()
+  return require("metaphrast.ui")
+end
+
+local function is_visible()
+  return (instance.state == "shown" or instance.state == "focused") and instance.win ~= nil
+end
+
+local function clear_source_augroup()
+  if instance.source_group then
+    pcall(vim.api.nvim_del_augroup_by_id, instance.source_group)
+    instance.source_group = nil
+  end
+end
+
+local function clear_hover_augroup()
+  if instance.hover_group then
+    pcall(vim.api.nvim_del_augroup_by_id, instance.hover_group)
+    instance.hover_group = nil
+  end
+end
+
+local function apply_extmarks(buf, extmarks)
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(buf, theme.ns_layout, 0, -1)
+  vim.api.nvim_buf_clear_namespace(buf, theme.ns_hl, 0, -1)
+  for _, mark in ipairs(extmarks) do
+    vim.api.nvim_buf_set_extmark(buf, mark.ns, mark.row, mark.col, mark.opts)
+  end
+end
+
+---Close the hover after an update could not run in the source window.
+local function fail_close(reason)
+  instance.last_error = reason
+  ui().notify("metaphrast: " .. reason, "error")
+  if instance.win then
+    instance.win:close()
+  end
+end
+
+---Recompute the geometry for the current content, freezing the side on first use.
+---@return MetaphrastHoverGeometry|nil geometry Nil when the source window is unusable.
+local function compute(extra)
+  extra = extra or {}
+  local lines = instance.content.lines
+  local base = {
+    border = instance.border,
+    virt_rows = instance.content.virt_rows,
+    measured_text_height = extra.measured_text_height,
+  }
+  local geometry
+  local ok = M.in_source(instance.source, function()
+    local frozen = instance.frozen_below
+    local ctx = M.geometry_ctx(instance.source, vim.tbl_extend("force", base, { below = frozen ~= false }))
+    geometry = M.compute_geometry(lines, instance.cfg.win, ctx, frozen)
+    if frozen == nil and not geometry.below then
+      ctx = M.geometry_ctx(instance.source, vim.tbl_extend("force", base, { below = false }))
+      geometry = M.compute_geometry(lines, instance.cfg.win, ctx, false)
+    end
+  end)
+  if not ok then
+    return nil
+  end
+  instance.frozen_below = geometry.below
+  instance.geometry = geometry
+  return geometry
+end
+
+---Forward a geometry to the window through `in_source(update)` when it changed.
+local function apply_geometry(geometry)
+  local win = instance.win
+  if not win then
+    return false
+  end
+  local opts = win.opts
+  if
+    opts.row == geometry.row
+    and opts.col == geometry.col
+    and opts.width == geometry.width
+    and opts.height == geometry.height
+  then
+    return true
+  end
+  opts.row, opts.col, opts.width, opts.height = geometry.row, geometry.col, geometry.width, geometry.height
+  return M.in_source(instance.source, function()
+    win:update()
+  end)
+end
+
+local function update_geometry(extra)
+  if not is_visible() then
+    return false
+  end
+  local geometry = compute(extra)
+  if not geometry or not apply_geometry(geometry) then
+    fail_close("source window changed")
+    return false
+  end
+  return true
+end
+
+---Post-render correction: measure the rendered height (virtual lines included) and re-fit.
+local function measure()
+  if not is_visible() or not instance.win:valid() then
+    return
+  end
+  local all = vim.api.nvim_win_text_height(instance.win.win, {}).all
+  update_geometry({ measured_text_height = math.max(1, all - instance.content.virt_rows) })
+end
+
+local function schedule_measure(delay)
+  instance.measure_gen = instance.measure_gen + 1
+  local gen = instance.measure_gen
+  vim.defer_fn(function()
+    if instance.measure_gen == gen then
+      measure()
+    end
+  end, delay)
+end
+
+local function render_content()
+  local content = M.build_lines(instance.result, instance.source, instance.original_visible, instance.cfg.win.padding)
+  instance.content = content
+  local buf = instance.buf
+  if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  local modifiable = vim.api.nvim_get_option_value("modifiable", { buf = buf })
+  vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, content.lines)
+  vim.api.nvim_set_option_value("modifiable", modifiable, { buf = buf })
+  apply_extmarks(buf, content.extmarks)
+end
+
+---snacks `on_close`: the only transition to `hidden`.
+local function on_close(self)
+  if self ~= instance.win then
+    return
+  end
+  clear_source_augroup()
+  clear_hover_augroup()
+  local event = instance.closing_event
+  instance.closing_event = nil
+  instance.measure_gen = instance.measure_gen + 1
+  instance.state = "hidden"
+  instance.close_count = instance.close_count + 1
+  instance.win = nil
+  instance.buf = nil
+  if event == "CursorMoved" then
+    leave_visual_or_select_mode()
+  end
+end
+
+local function close_if_shown(ev)
+  if instance.state == "shown" and instance.win then
+    instance.closing_event = ev.event
+    instance.win:close()
+  end
+end
+
+local function register_source_autocmds()
+  local group = vim.api.nvim_create_augroup(SOURCE_GROUP, { clear = true })
+  instance.source_group = group
+  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "BufLeave", "InsertEnter", "BufWinLeave" }, {
+    group = group,
+    buffer = instance.source.buf,
+    desc = "metaphrast: close the unfocused hover",
+    callback = close_if_shown,
+  })
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = group,
+    pattern = tostring(instance.source.win),
+    desc = "metaphrast: close the hover with its source window",
+    callback = close_if_shown,
+  })
+end
+
+local function register_hover_autocmds()
+  local group = vim.api.nvim_create_augroup(HOVER_GROUP, { clear = true })
+  instance.hover_group = group
+  local buf = instance.buf
+  vim.api.nvim_create_autocmd("WinLeave", {
+    group = group,
+    buffer = buf,
+    desc = "metaphrast: close the focused hover when it loses focus",
+    callback = function()
+      if instance.state == "focused" and instance.win then
+        instance.win:close()
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd("VimResized", {
+    group = group,
+    desc = "metaphrast: refit the hover to the new screen",
+    callback = function()
+      if update_geometry({}) then
+        schedule_measure(0)
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd("CursorHold", {
+    group = group,
+    buffer = buf,
+    desc = "metaphrast: refit the hover after renderers changed its height",
+    callback = measure,
+  })
+  vim.api.nvim_create_autocmd("TextChanged", {
+    group = group,
+    buffer = buf,
+    desc = "metaphrast: refit the hover after an edit",
+    callback = function()
+      schedule_measure(30)
+    end,
+  })
+end
+
+local function build_actions()
+  return {
+    close = {
+      action = function(self)
+        self:close()
+      end,
+      desc = "close",
+    },
+    yank = {
+      action = function()
+        M.yank()
+      end,
+      desc = "yank translation",
+    },
+    replace = {
+      action = function()
+        M.replace()
+      end,
+      desc = "replace source",
+    },
+    original = {
+      action = function()
+        M.toggle_original()
+      end,
+      desc = "toggle original",
+    },
+    provider = {
+      action = function()
+        M.request_provider()
+      end,
+      desc = "change provider",
+    },
+    help = {
+      action = function(self)
+        self:toggle_help()
+      end,
+      desc = "help",
+    },
+  }
+end
+
+---Why `source` cannot host a hover right now, or nil when it can.
+local function source_problem(source)
+  if type(source) ~= "table" or not source.win or not source.buf then
+    return "source window missing"
+  end
+  if not vim.api.nvim_win_is_valid(source.win) then
+    return "source window closed"
+  end
+  if vim.api.nvim_win_get_buf(source.win) ~= source.buf then
+    return "source window shows another buffer"
+  end
+  if vim.api.nvim_get_current_win() ~= source.win then
+    return "source window is not current"
+  end
+  return nil
+end
+
+---Show a translation in the hover. Only core `present()` calls this.
+---Any open hover is closed first. When the source window is gone, shows
+---another buffer, or is not current, the translation is reported in an error
+---toast instead and no window opens.
+---@param source MetaphrastHoverSource
+---@param result MetaphrastHoverResult
+---@param opts { focus?: boolean, ui?: MetaphrastUiConfig }|nil `ui` defaults to the core config.
+---@return boolean shown
+function M.show(source, result, opts)
+  opts = opts or {}
+  if instance.state ~= "hidden" then
+    M.close()
+  end
+  local reason = source_problem(source)
+  if reason then
+    instance.state = "hidden"
+    instance.last_error = reason
+    ui().notify(
+      string.format("metaphrast: source window changed (%s); translation: %s", reason, result.translated or ""),
+      "error"
+    )
+    return false
+  end
+
+  local cfg = opts.ui or require("metaphrast").config.ui
+  theme.ensure_highlights(cfg.hover.theme)
+  instance.source = source
+  instance.result = result
+  instance.cfg = cfg
+  instance.border = M.resolve_border(cfg.win.border)
+  instance.original_visible = cfg.hover.show_original == true
+  instance.frozen_below = nil
+  instance.last_error = nil
+  instance.content = M.build_lines(result, source, instance.original_visible, cfg.win.padding)
+
+  local geometry = compute()
+  if not geometry then
+    instance.last_error = "source window changed"
+    ui().notify("metaphrast: source window changed; translation: " .. (result.translated or ""), "error")
+    return false
+  end
+
+  local content = instance.content
+  local chrome = {
+    title = theme.title_chips(result.meta, result.opts),
+    footer = cfg.hover.footer and theme.footer_chips(cfg.hover.keys, false) or nil,
+    keys = M.resolve_keys(cfg.hover.keys),
+    actions = build_actions(),
+    text = content.lines,
+    on_win = function(self)
+      apply_extmarks(self.buf or instance.buf, content.extmarks)
+    end,
+    on_close = on_close,
+  }
+  local snacks = ui().require_snacks()
+  local win_opts = M.snacks_opts(cfg, geometry, chrome)
+  local win
+  -- The constructor shows the window, so it is a cursor-relative write too.
+  M.in_source(source, function()
+    win = snacks.win(win_opts)
+  end)
+  if not win then
+    instance.last_error = "window not created"
+    return false
+  end
+  instance.win = win
+  instance.buf = win.buf
+  instance.state = "shown"
+  register_source_autocmds()
+  register_hover_autocmds()
+  vim.schedule(measure)
+  vim.defer_fn(measure, 100)
+  if opts.focus then
+    M.focus()
+  end
+  return true
+end
+
+---Focus the hover: the source close-autocmds go away, the footer shows the
+---keys, and the window is entered. Only valid from `shown`.
+---@return boolean focused
+function M.focus()
+  if instance.state ~= "shown" then
+    return false
+  end
+  local win = instance.win
+  if not (win and win:valid()) then
+    return false
+  end
+  clear_source_augroup()
+  if instance.cfg.hover.footer then
+    win.opts.footer = theme.footer_chips(instance.cfg.hover.keys, true)
+  end
+  local ok = M.in_source(instance.source, function()
+    win:update()
+  end)
+  if not ok then
+    fail_close("source window changed")
+    return false
+  end
+  instance.state = "focused"
+  win:focus()
+  return true
+end
+
+---Re-enter the hover after a `vim.ui.select` cancel or a failed retranslation.
+---Scheduled so the picker restores its own window first; never wrapped in
+---`nvim_win_call`, which would restore the previous window on return.
+function M.refocus()
+  vim.schedule(function()
+    local win = instance.win
+    if instance.state ~= "hidden" and win and win:valid() then
+      win:focus()
+      instance.state = "focused"
+    end
+  end)
+end
+
+---Close the hover window; the state changes in snacks' `on_close`.
+---@return boolean closed False when no window was open.
+function M.close()
+  local win = instance.win
+  if not win then
+    return false
+  end
+  win:close()
+  return true
+end
+
+---Yank the translation (never the original) into `"` and, with clipboard support, `+`.
+---@return boolean yanked
+function M.yank()
+  if instance.state == "hidden" or not instance.result then
+    return false
+  end
+  local text = instance.result.translated or ""
+  vim.fn.setreg('"', text)
+  if vim.fn.has("clipboard") == 1 then
+    vim.fn.setreg("+", text)
+  end
+  ui().notify("Copied translation", "info")
+  return true
+end
+
+---Replace the source range with the translation through core `apply_result`,
+---then close. On refusal (source changed) the hover stays open.
+---@return boolean replaced
+function M.replace()
+  if not is_visible() then
+    return false
+  end
+  local ok = require("metaphrast").apply_result(instance.source, instance.result.translated)
+  if ok then
+    M.close()
+  end
+  return ok == true
+end
+
+---Toggle the original text pane inside the hover and re-fit the window,
+---keeping the anchored edge fixed.
+---@return boolean toggled
+function M.toggle_original()
+  if not is_visible() then
+    return false
+  end
+  instance.original_visible = not instance.original_visible
+  render_content()
+  return update_geometry({})
+end
+
+---Pick another provider and retranslate through core. The hover stays open
+---(`pending`) while the picker is up; cancel re-focuses it.
+---@return boolean started
+function M.request_provider()
+  if instance.state ~= "focused" then
+    return false
+  end
+  local registry = require("metaphrast.providers")
+  local current = instance.result.meta and instance.result.meta.provider
+  local candidates = vim.tbl_filter(function(name)
+    return name ~= current
+  end, registry.names())
+  if #candidates == 0 then
+    ui().notify("metaphrast: no other provider is registered", "warn")
+    return false
+  end
+  instance.state = "pending"
+  local source = instance.source
+  vim.ui.select(candidates, { prompt = "Retranslate with provider" }, function(choice)
+    if not choice then
+      M.refocus()
+      return
+    end
+    require("metaphrast").retranslate(source, { provider = choice })
+  end)
+  return true
+end
+
+---Whether the hover is open for `buf` (0 or nil: the current buffer), from
+---the source buffer or from inside the hover itself.
+---@param buf integer|nil
+---@return boolean open
+function M.is_open_for(buf)
+  if buf == nil or buf == 0 then
+    buf = vim.api.nvim_get_current_buf()
+  end
+  if instance.state == "hidden" then
+    return false
+  end
+  return (instance.source ~= nil and instance.source.buf == buf) or instance.buf == buf
+end
+
+---Snapshot of the hover state for `:checkhealth`-style inspection and tests.
+---@return table debug `state`, `source`, `geometry`, `close_count`, `last_error`, `result`, `win`, `buf`.
+function M.debug()
+  local source = instance.source
+  return {
+    state = instance.state,
+    source = source and { buf = source.buf, win = source.win, sr = source.sr, er = source.er } or nil,
+    geometry = instance.geometry and vim.deepcopy(instance.geometry) or nil,
+    close_count = instance.close_count,
+    last_error = instance.last_error,
+    result = instance.result,
+    original_visible = instance.original_visible,
+    win = instance.win and instance.win.win or nil,
+    buf = instance.buf,
+  }
+end
+
+---Close any window and forget every piece of module state.
+function M._reset_for_tests()
+  if instance.win then
+    pcall(function()
+      instance.win:close()
+    end)
+  end
+  clear_source_augroup()
+  clear_hover_augroup()
+  instance = new_instance()
 end
 
 return M
