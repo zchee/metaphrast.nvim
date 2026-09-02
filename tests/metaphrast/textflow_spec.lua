@@ -67,14 +67,13 @@ describe("textflow.segment", function()
   end)
 
   it("passes non-comment lines through without merging", function()
-    local stripped = { "// note", "code()", "// tail" }
+    -- Leaders are already removed from comment lines; non-comment lines stay verbatim.
+    local stripped = { "note", "code()", "tail" }
     local info = {
       { indent = "", has_comment = true },
       { indent = "", has_comment = false },
       { indent = "", has_comment = true },
     }
-    -- The first stripped value already has its leader removed; emulate that.
-    stripped = { "note", "code()", "tail" }
     local segments, count = textflow.segment(stripped, info)
     assert.equals(2, count)
     assert.equals("para", segments[1].kind)

@@ -367,18 +367,6 @@ local function extract_selection_lines(bufnr, mode, sr, sc, er, ec)
   return parts
 end
 
----Extract the selected text from a buffer based on visual mode and positions.
----@param bufnr integer
----@param mode string
----@param sr integer 0-indexed start row.
----@param sc integer 0-indexed start col.
----@param er integer 0-indexed end row.
----@param ec integer 0-indexed end col (exclusive).
----@return string text The selected text joined by newlines.
-local function extract_selection_text(bufnr, mode, sr, sc, er, ec)
-  return table.concat(extract_selection_lines(bufnr, mode, sr, sc, er, ec), "\n")
-end
-
 ---Replace the selected text in a buffer.
 ---@param bufnr integer
 ---@param mode string

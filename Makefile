@@ -1,7 +1,7 @@
 TESTS_INIT=tests/minimal_init.lua
 TESTS_DIR=tests/
 
-.PHONY: test fmt
+.PHONY: test fmt lint
 
 test:
 	@nvim \
@@ -12,3 +12,6 @@ test:
 
 fmt:
 	@stylua .
+
+lint:
+	@luacheck lua/ plugin/ tests/

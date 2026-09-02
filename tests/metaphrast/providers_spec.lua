@@ -138,11 +138,10 @@ describe("google provider", function()
   end)
 
   it("translates with mock http", function()
-    local captured_method, captured_url, captured_opts
-    local mock_http = function(method, url, opts)
+    local captured_method, captured_url
+    local mock_http = function(method, url)
       captured_method = method
       captured_url = url
-      captured_opts = opts
       return {
         code = 0,
         stdout = vim.json.encode({
@@ -267,7 +266,13 @@ describe("google provider", function()
       return {
         code = 0,
         http_status = 403,
-        stdout = [[{"error":{"code":403,"message":"Requests to this API translate method google.cloud.translate.v2.TranslateService.TranslateText are blocked."}}]],
+        stdout = vim.json.encode({
+          error = {
+            code = 403,
+            message = "Requests to this API translate method "
+              .. "google.cloud.translate.v2.TranslateService.TranslateText are blocked.",
+          },
+        }),
       }
     end
     local payload = make_payload("hi", "google", {
