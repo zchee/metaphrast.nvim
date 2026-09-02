@@ -11,11 +11,16 @@ make lint          # luacheck lua/ plugin/ tests/
 stylua --check lua # what CI runs (only lua/ is checked in CI)
 ```
 
-Tests git-clone plenary.nvim into `$PLENARY_DIR` (default `/tmp/plenary.nvim`) on first run. Run a single spec with:
+Tests git-clone plenary.nvim into `$PLENARY_DIR` (default `/tmp/plenary.nvim`) and snacks.nvim into `$SNACKS_DIR` (default `/tmp/snacks.nvim`, checked out at `$SNACKS_REF`) on first run. `make smoke` runs the end-to-end hover fixture. Run a single spec with:
 
 ```bash
-nvim --headless --noplugin -u tests/minimal_init.lua -c "PlenaryBustedFile tests/metaphrast/textflow_spec.lua"
+nvim --headless --noplugin -u tests/minimal_init.lua \
+  -c "PlenaryBustedDirectory tests/metaphrast/textflow_spec.lua { minimal_init = 'tests/minimal_init.lua' }"
 ```
+
+`PlenaryBustedFile` spawns the child without `-u`, so snacks never loads and
+every `setup()` in the spec errors; always use the `PlenaryBustedDirectory`
+form above, even for a single file.
 
 ## Naming
 
@@ -24,16 +29,13 @@ The Lua namespace, user commands, highlight groups, cache directory, vimdoc, and
 ## Target platform
 
 - Neovim nightly only. Do not add compatibility guards (`if vim.system`, `vim.uv or vim.loop`); remove them when you touch code that has them.
-- `curl` is a hard runtime dependency (`http.lua` shells out to it). plenary.nvim and snacks.nvim are optional and must stay behind `pcall(require, ...)` with the existing fallbacks.
+- `curl` is a hard runtime dependency (`http.lua` shells out to it). plenary.nvim is optional and must stay behind `pcall(require, ...)`.
+- snacks.nvim (>= 2.31.0) is a hard dependency, reached only through `require("metaphrast.ui").require_snacks()`; never reference the `Snacks` global (`.luacheckrc` allows only `vim`, and `rg "Snacks\." lua/ plugin/` must stay empty). No fallback path may come back.
+- Every window write goes through `hover.in_source` (`nvim_win_call(source.win, ...)`), because a `relative="cursor"` float re-anchors to whatever window is current. `snacks_opts` always emits `resize = false` so snacks' own `VimResized` handler never writes behind our back, and `compute_geometry` is the only producer of `row`/`col`/`width`/`height`.
 
 ## Docs are generated
 
 `doc/metaphrast.txt` is regenerated from `README.md` by `.github/workflows/docs.yaml` (panvimdoc) on push to main. Edit `README.md`, never the `.txt`.
-
-Known README vs code mismatches (code is canonical until the user says otherwise):
-- DeepL key env var: code reads `DEEPL_AUTH_KEY`; README says `DEEPL_API_KEY`.
-- Gemini key env var: code reads `GOOGLE_API_KEY` then `GEMINI_API_KEY`; README says `GOOGLE_GENAI_KEY`.
-- `:MetaphrastTranslateUI` is documented but does not exist; its behavior lives in `:MetaphrastTranslate` (async, popup unless `!`).
 
 ## Style
 
@@ -46,7 +48,7 @@ Known README vs code mismatches (code is canonical until the user says otherwise
 
 - Framework is plenary.busted; specs live in `tests/metaphrast/<module>_spec.lua`.
 - No network in tests: use `setup({ provider = "echo" })`, or pass a fake `_http` function to a provider's `translate()`.
-- Mock snacks with `package.loaded["snacks"] = {...}` (or `= false` to test fallbacks) and clear it in `after_each`.
+- Specs run against real snacks, cloned by `tests/minimal_init.lua` at the pinned `$SNACKS_REF`; never assign `package.loaded["snacks"]`. Fake `vim.ui.select` in specs that exercise the provider key — the default implementation blocks headless Neovim.
 - Call `_reset_for_tests()` on `metaphrast`, `metaphrast.ui`, and `metaphrast.providers.google` in `before_each` as needed.
 - Keep `cache.ttl <= 5` in cache tests so entries stay memory-only and never write to disk.
 
