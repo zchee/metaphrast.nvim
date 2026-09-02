@@ -5,10 +5,15 @@ on:
       - 'v*'
 jobs:
   luarocks-upload:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: LuaRocks Upload
         uses: nvim-neorocks/luarocks-tag-release@v7
         env:
           LUAROCKS_API_KEY: ${{ secrets.LUAROCKS_API_KEY }}
+        with:
+          # snacks.nvim is required at runtime, so the rock has to declare it;
+          # 2.31.0 is the first version with the win option surface we target.
+          dependencies: |
+            snacks.nvim >= 2.31.0

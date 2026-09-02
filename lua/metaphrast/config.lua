@@ -22,6 +22,52 @@
 ---@field fallback_models string[]?
 ---@field retry_on_upstream_rate_limit boolean?
 
+---@class MetaphrastWinPadding
+---@field top integer Blank rows above the body (rendered as virtual lines).
+---@field bottom integer Blank rows below the body (rendered as virtual lines).
+---@field left integer Left inset, rendered through `wo.statuscolumn`.
+---@field right integer Right inset, slack inside the window width.
+
+---@class MetaphrastWinConfig
+---@field border string|string[]|nil Border spec; nil falls back to `vim.o.winborder`.
+---@field width integer|number|nil Columns, a 0<n<1 fraction of `vim.o.columns`, or nil for auto.
+---@field height integer|number|nil Rows, a 0<n<1 fraction of the usable rows, or nil for auto.
+---@field max_width integer|number|nil Upper bound for the auto width only.
+---@field max_height integer|number|nil Upper bound for the auto height only.
+---@field min_width integer|number|nil Lower bound for the auto width only.
+---@field min_height integer|number|nil Lower bound for the auto height only.
+---@field padding MetaphrastWinPadding
+---@field row integer Row offset from the anchor line.
+---@field col integer Column offset from the anchor column.
+---@field winblend integer Pseudo-transparency, mapped to `wo.winblend`.
+---@field backdrop boolean|integer `false` disables the backdrop; a number sets its blend.
+---@field wo table<string, any> Window-local options merged last.
+---@field bo table<string, any> Buffer-local options merged last.
+
+---@class MetaphrastHoverKeys
+---@field close string|string[]|false Close the focused hover.
+---@field yank string|string[]|false Yank the translation.
+---@field replace string|string[]|false Replace the source range.
+---@field original string|string[]|false Toggle the original text pane.
+---@field provider string|string[]|false Retranslate with another provider.
+---@field help string|string[]|false Toggle the key-hint help window.
+
+---@class MetaphrastHoverConfig
+---@field show_original boolean Open with the original text pane visible.
+---@field footer boolean Render the key-hint footer.
+---@field render_markdown boolean Use filetype "markdown" so markdown renderers attach.
+---@field keys MetaphrastHoverKeys
+---@field theme string "link" (colorscheme links) or "teal" (legacy palette).
+
+---@class MetaphrastNotifyConfig
+---@field icon string Icon shown on progress and result toasts.
+---@field timeout integer Milliseconds a finished toast stays up.
+
+---@class MetaphrastUiConfig
+---@field win MetaphrastWinConfig
+---@field hover MetaphrastHoverConfig
+---@field notify MetaphrastNotifyConfig
+
 ---@class MetaphrastConfig
 ---@field provider string
 ---@field icon string
@@ -29,16 +75,35 @@
 ---@field source_lang string|nil
 ---@field replace boolean
 ---@field max_chars integer
+---@field max_inserted_lines integer Cap on lines a blockwise replace may add below the block.
 ---@field cache MetaphrastCacheConfig
 ---@field http MetaphrastHttpConfig
 ---@field providers table<string, MetaphrastProviderConfig>
----@field ui { win?: { padding?: { top?: integer, bottom?: integer, left?: integer, right?: integer }, width?: integer|nil, height?: integer|nil } }
+---@field ui MetaphrastUiConfig
 ---@field pricing_last_review string
 
----@class MetaphrastUiConfig
----@field win table|nil
-
 local M = {}
+
+-- Every key `ui.win` accepts. Anything else is a typo or a snacks option we
+-- deliberately do not forward, so `warn_unknown_win_keys` reports it once.
+local KNOWN_WIN_KEYS = {
+  backdrop = true,
+  bo = true,
+  border = true,
+  col = true,
+  height = true,
+  max_height = true,
+  max_width = true,
+  min_height = true,
+  min_width = true,
+  padding = true,
+  row = true,
+  width = true,
+  winblend = true,
+  wo = true,
+}
+
+local warned_win_keys = {}
 
 local function default_cache_dir()
   return vim.fn.stdpath("cache") .. "/metaphrast"
@@ -53,6 +118,7 @@ function M.defaults()
     source_lang = nil,
     replace = false,
     max_chars = 8000,
+    max_inserted_lines = 200,
     cache = {
       enabled = true,
       ttl = 7 * 24 * 3600,
@@ -112,12 +178,70 @@ function M.defaults()
     },
     ui = {
       win = {
-        padding = { top = 0, bottom = 0, left = 0, right = 0 },
+        border = nil,
         width = nil,
         height = nil,
+        max_width = 0.6,
+        max_height = 0.5,
+        min_width = nil,
+        min_height = nil,
+        padding = { top = 0, bottom = 0, left = 1, right = 1 },
+        row = 1,
+        col = 0,
+        winblend = 0,
+        backdrop = false,
+        wo = {},
+        bo = {},
+      },
+      hover = {
+        show_original = false,
+        footer = true,
+        render_markdown = true,
+        keys = {
+          close = { "q", "<Esc>" },
+          yank = "y",
+          replace = "r",
+          original = "o",
+          provider = "p",
+          help = "?",
+        },
+        theme = "link",
+      },
+      notify = {
+        icon = "󰊿",
+        timeout = 3000,
       },
     },
   }
+end
+
+---Report unknown `ui.win` keys through `notify_fn`, at most once per key.
+---Pure: it never requires snacks and never mutates the passed table.
+---@param win table|nil The user's `ui.win` table.
+---@param notify_fn fun(msg: string, level: string) Notification sink.
+---@return string[] reported Key names reported by this call, sorted.
+function M.warn_unknown_win_keys(win, notify_fn)
+  local reported = {}
+  if type(win) ~= "table" then
+    return reported
+  end
+  for key in pairs(win) do
+    local name = type(key) == "string" and key or tostring(key)
+    if not KNOWN_WIN_KEYS[key] and not warned_win_keys[name] then
+      reported[#reported + 1] = name
+    end
+  end
+  table.sort(reported)
+  for _, name in ipairs(reported) do
+    warned_win_keys[name] = true
+    notify_fn(string.format("metaphrast: unknown ui.win key %q (ignored)", name), "warn")
+  end
+  return reported
+end
+
+---Forget which unknown keys were already reported.
+function M._reset_for_tests()
+  warned_win_keys = {}
 end
 
 ---@param opts table|nil

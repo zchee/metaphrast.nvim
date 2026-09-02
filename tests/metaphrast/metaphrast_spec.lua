@@ -1,3 +1,4 @@
+local hover = require("metaphrast.ui.hover")
 local metaphrast = require("metaphrast")
 local registry = require("metaphrast.providers")
 
@@ -165,19 +166,16 @@ describe("translation core", function()
     assert.equals("ping-ok", out)
   end)
 
-  it("falls back to echo when provider lacks credentials at call time", function()
-    metaphrast.setup({
-      provider = "deepl",
-      providers = {
-        deepl = { api_key = "" },
-      },
-    })
+  it("raises when the provider lacks credentials at call time", function()
+    metaphrast.setup({ provider = "echo" })
+    metaphrast.config.provider = "deepl"
+    metaphrast.config.providers.deepl.api_key = ""
 
-    local out, meta = metaphrast.translate("Hello", { target_lang = "ja" })
-    assert.equals("Hello [echo]->ja", out)
-    assert.is_table(meta)
-    assert.equals("echo", meta.provider)
-    assert.is_false(meta.cached)
+    assert.has_error(function()
+      metaphrast.translate("Hello", { target_lang = "ja" })
+    end)
+    -- The failure is raised to the caller; the global provider is never rewritten.
+    assert.equals("deepl", metaphrast.config.provider)
   end)
 end)
 
@@ -364,162 +362,98 @@ describe("comment handling", function()
     assert.equals("    /* Translate only the inner text <t> */", lines[1])
     assert.equals("Translate only the inner text", last_text)
   end)
-
-  it("omits comment leaders in show_window output", function()
-    local last_text
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-
-    registry.register("capture_window", {
-      translate = function(_, payload)
-        last_text = payload.text
-        return payload.text .. " <t>"
-      end,
-      estimate_cost = function()
-        return 0
-      end,
-    })
-    metaphrast.config.provider = "capture_window"
-    metaphrast.config.replace = false
-
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.bo[bufnr].commentstring = "// %s"
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "// hello world" })
-
-    metaphrast.translate_range(bufnr, 0, 1, { target_lang = "de", show_window = true })
-
-    assert.equals("hello world", last_text)
-    assert.truthy(win_opts)
-    assert.equals("hello world <t>", win_opts.text[1])
-
-    package.loaded["snacks"] = nil
-    require("metaphrast.ui")._reset_for_tests()
-  end)
 end)
 
 describe("commands", function()
+  local test_ui = require("metaphrast.ui")
+  local original_prompt = test_ui.prompt_target
+
   before_each(function()
     metaphrast._reset_for_tests()
     metaphrast.setup({ provider = "echo" })
     vim.cmd("runtime plugin/metaphrast.lua")
   end)
 
-  it("replaces selected lines when bang is used", function()
-    package.loaded["snacks"] = false
-    local test_ui = require("metaphrast.ui")
-    test_ui._reset_for_tests()
-    local original_progress = test_ui.progress
-    local original_notify = test_ui.notify
-    local done = false
-    test_ui.progress = function()
-      return function()
-        done = true
-      end
-    end
-    test_ui.notify = function() end
+  after_each(function()
+    test_ui.prompt_target = original_prompt
+  end)
 
+  local function open_buffer(lines)
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+    return bufnr
+  end
+
+  local function wait_for_replacement(bufnr, original)
+    return vim.wait(1000, function()
+      return vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] ~= original
+    end)
+  end
+
+  it("replaces selected lines when bang is used", function()
+    local bufnr = open_buffer({ "Hello world" })
+
     vim.cmd("1,1MetaphrastTranslate! en es")
 
-    vim.wait(1000, function()
-      return done
-    end)
-
-    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    assert.equals("Hello world [echo]->es", lines[1])
-
-    test_ui.progress = original_progress
-    test_ui.notify = original_notify
+    assert.is_true(wait_for_replacement(bufnr, "Hello world"))
+    assert.equals("Hello world [echo]->es", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
   end)
 
   it("uses configured target_lang without prompting when args are omitted", function()
     metaphrast._reset_for_tests()
     metaphrast.setup({ provider = "echo", target_lang = "fr", source_lang = "en" })
-    vim.cmd("runtime plugin/metaphrast.lua")
-
-    package.loaded["snacks"] = false
-    local test_ui = require("metaphrast.ui")
-    test_ui._reset_for_tests()
-    local original_prompt = test_ui.prompt_target
-    local original_progress = test_ui.progress
-    local original_notify = test_ui.notify
     local prompted = false
-    local done = false
     test_ui.prompt_target = function()
       prompted = true
     end
-    test_ui.progress = function()
-      return function()
-        done = true
-      end
-    end
-    test_ui.notify = function() end
-
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
+    local bufnr = open_buffer({ "Hello world" })
 
     vim.cmd("1,1MetaphrastTranslate!")
 
-    vim.wait(1000, function()
-      return done
-    end)
-
-    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    assert.equals("Hello world [echo]->fr", lines[1])
+    assert.is_true(wait_for_replacement(bufnr, "Hello world"))
+    assert.equals("Hello world [echo]->fr", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
     assert.is_false(prompted)
-
-    test_ui.prompt_target = original_prompt
-    test_ui.progress = original_progress
-    test_ui.notify = original_notify
   end)
 
   it("prefers explicit args over configured languages", function()
     metaphrast._reset_for_tests()
     metaphrast.setup({ provider = "echo", target_lang = "fr", source_lang = "en" })
-    vim.cmd("runtime plugin/metaphrast.lua")
-
-    package.loaded["snacks"] = false
-    local test_ui = require("metaphrast.ui")
-    test_ui._reset_for_tests()
-    local original_progress = test_ui.progress
-    local original_notify = test_ui.notify
-    local done = false
-    test_ui.progress = function()
-      return function()
-        done = true
-      end
-    end
-    test_ui.notify = function() end
-
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
+    local bufnr = open_buffer({ "Hello world" })
 
     vim.cmd("1,1MetaphrastTranslate! es")
 
-    vim.wait(1000, function()
-      return done
-    end)
+    assert.is_true(wait_for_replacement(bufnr, "Hello world"))
+    assert.equals("Hello world [echo]->es", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
+  end)
 
-    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    assert.equals("Hello world [echo]->es", lines[1])
+  it("prompts for the target language when none is configured", function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo", target_lang = "" })
+    local prompted_default
+    test_ui.prompt_target = function(default, on_confirm)
+      prompted_default = default
+      on_confirm("de")
+    end
+    local bufnr = open_buffer({ "Hello world" })
 
-    test_ui.progress = original_progress
-    test_ui.notify = original_notify
+    vim.cmd("1,1MetaphrastTranslate!")
+
+    assert.is_true(wait_for_replacement(bufnr, "Hello world"))
+    assert.equals("", prompted_default)
+    assert.equals("Hello world [echo]->de", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
+  end)
+
+  it("opens the hover without a bang and leaves the buffer untouched", function()
+    local bufnr = open_buffer({ "Hello world" })
+
+    vim.cmd("1,1MetaphrastTranslate es")
+
+    assert.is_true(vim.wait(1000, function()
+      return hover.is_open_for(bufnr)
+    end))
+    assert.equals("Hello world", vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)[1])
+    assert.same({ "Hello world [echo]->es" }, hover.debug().result.display_lines)
   end)
 end)
 
@@ -658,39 +592,6 @@ describe("visual selection translation", function()
     assert.equals("", result)
   end)
 
-  it("shows window instead of replacing when replace is false", function()
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    require("metaphrast.ui")._reset_for_tests()
-
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
-    set_visual_marks(bufnr, 1, 0, 1, 10)
-
-    metaphrast.translate_selection(bufnr, "V", {
-      target_lang = "es",
-      replace = false,
-      show_window = true,
-    })
-
-    assert.truthy(win_opts)
-    assert.equals("Hello world [echo]->es", win_opts.text[1])
-
-    package.loaded["snacks"] = nil
-    require("metaphrast.ui")._reset_for_tests()
-  end)
-
   it("async translates and replaces visual selection", function()
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -827,40 +728,6 @@ describe("visual selection translation", function()
     assert.equals("// not actually a comment [echo]->de", result)
   end)
 
-  it("strips comment leader in show_window output", function()
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    require("metaphrast.ui")._reset_for_tests()
-
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.bo[bufnr].commentstring = "// %s"
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "// comment payload" })
-    set_visual_marks(bufnr, 1, 0, 1, 18)
-
-    metaphrast.translate_selection(bufnr, "V", {
-      target_lang = "es",
-      replace = false,
-      show_window = true,
-    })
-
-    assert.truthy(win_opts)
-    assert.is_nil(win_opts.text[1]:find("//"), "show_window output should not contain // : " .. win_opts.text[1])
-
-    package.loaded["snacks"] = nil
-    require("metaphrast.ui")._reset_for_tests()
-  end)
-
   it("async strips and reapplies line comments on linewise visual selection", function()
     local bufnr = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_set_current_buf(bufnr)
@@ -892,634 +759,468 @@ describe("visual selection translation", function()
   end)
 end)
 
-describe("Snacks.win result window", function()
-  local original_mode = vim.fn.mode
-  local original_feedkeys = vim.api.nvim_feedkeys
+---Open a scratch buffer holding `buf_lines` with the visual marks a
+---selection reads.
+---@param buf_lines string[]
+---@param commentstring string
+---@param start_row integer 1-indexed
+---@param start_col integer 0-indexed
+---@param end_row integer 1-indexed
+---@param end_col integer 0-indexed, inclusive
+---@return integer bufnr
+local function block_buffer(buf_lines, commentstring, start_row, start_col, end_row, end_col)
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.bo[bufnr].commentstring = commentstring
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, buf_lines)
+  vim.api.nvim_buf_set_mark(bufnr, "<", start_row, start_col, {})
+  vim.api.nvim_buf_set_mark(bufnr, ">", end_row, end_col, {})
+  return bufnr
+end
 
-  after_each(function()
-    vim.fn.mode = original_mode
-    vim.api.nvim_feedkeys = original_feedkeys
-    package.loaded["snacks"] = nil
-    require("metaphrast.ui")._reset_for_tests()
-  end)
-
-  it("uses snacks.win when show_window is enabled", function()
-    metaphrast._reset_for_tests()
-    metaphrast.setup({ provider = "echo" })
-
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    require("metaphrast.ui")._reset_for_tests()
-
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
-
-    local echoed = false
-    local original_echo = vim.api.nvim_echo
-    vim.api.nvim_echo = function()
-      echoed = true
-    end
-
-    local done = false
-    metaphrast.translate_range_async(bufnr, 0, 1, {
-      target_lang = "es",
-      show_window = true,
-      replace = false,
-    }, {
-      on_success = function()
-        done = true
-      end,
-      on_error = function(err)
-        done = true
-        error(err)
-      end,
-    })
-
-    vim.wait(1000, function()
-      return done
-    end)
-
-    vim.api.nvim_echo = original_echo
-
-    assert.is_true(done)
-    assert.truthy(win_opts)
-    assert.equals("Hello world [echo]->es", win_opts.text[1])
-    assert.equals("cursor", win_opts.relative)
-    assert.equals(1, win_opts.row)
-    assert.equals(0, win_opts.col)
-    assert.equals("rounded", win_opts.border)
-    assert.equals("center", win_opts.title_pos)
-    assert.equals("q/Esc: close · y: yank · move cursor to dismiss", win_opts.footer)
-    assert.equals("center", win_opts.footer_pos)
-    assert.is_true(win_opts.wo.wrap)
-    assert.is_true(win_opts.wo.linebreak)
-    assert.equals("markdown", win_opts.bo.filetype)
-    assert.is_false(echoed)
-  end)
-
-  it("applies ui.win defaults from setup", function()
-    metaphrast._reset_for_tests()
-    metaphrast.setup({ provider = "echo", ui = { win = { width = 55, border = "single" } } })
-
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    require("metaphrast.ui")._reset_for_tests()
-
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello" })
-
-    local done = false
-    metaphrast.translate_range_async(bufnr, 0, 1, {
-      target_lang = "es",
-      show_window = true,
-      replace = false,
-    }, {
-      on_success = function()
-        done = true
-      end,
-      on_error = function(err)
-        done = true
-        error(err)
-      end,
-    })
-
-    vim.wait(1000, function()
-      return done
-    end)
-
-    assert.truthy(win_opts)
-    assert.equals(55, win_opts.width)
-    assert.equals("single", win_opts.border)
-  end)
-
-  it("allows call-specific win opts to override setup defaults", function()
-    metaphrast._reset_for_tests()
-    metaphrast.setup({ provider = "echo", ui = { win = { width = 80, border = "single" } } })
-
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    require("metaphrast.ui")._reset_for_tests()
-
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello" })
-
-    local done = false
-    metaphrast.translate_range_async(bufnr, 0, 1, {
-      target_lang = "es",
-      show_window = true,
-      replace = false,
-      win = { width = 30, border = "double" },
-    }, {
-      on_success = function()
-        done = true
-      end,
-      on_error = function(err)
-        done = true
-        error(err)
-      end,
-    })
-
-    vim.wait(1000, function()
-      return done
-    end)
-
-    assert.truthy(win_opts)
-    assert.equals(30, win_opts.width)
-    assert.equals("double", win_opts.border)
-  end)
-
-  it("applies padding from setup defaults", function()
-    metaphrast._reset_for_tests()
-    metaphrast.setup({
-      provider = "echo",
-      ui = {
-        win = {
-          padding = { top = 1, bottom = 1, left = 2, right = 2 },
-        },
-      },
-    })
-
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    require("metaphrast.ui")._reset_for_tests()
-
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello" })
-
-    local done = false
-    metaphrast.translate_range_async(bufnr, 0, 1, {
-      target_lang = "es",
-      show_window = true,
-      replace = false,
-    }, {
-      on_success = function()
-        done = true
-      end,
-      on_error = function(err)
-        done = true
-        error(err)
-      end,
-    })
-
-    vim.wait(1000, function()
-      return done
-    end)
-
-    assert.truthy(win_opts)
-    assert.equals("    ", win_opts.text[1])
-    assert.equals("  Hello [echo]->es  ", win_opts.text[2])
-    assert.equals("    ", win_opts.text[3])
-
-    package.loaded["snacks"] = nil
-    require("metaphrast.ui")._reset_for_tests()
-  end)
-
-  local function install_mock_snacks_win(win_id)
-    local state = { closed = 0, win_opts = nil }
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        state.win_opts = opts
-        return {
-          win = win_id,
-          show = function() end,
-          close = function()
-            state.closed = state.closed + 1
-          end,
-        }
-      end,
-    }
-    require("metaphrast.ui")._reset_for_tests()
-    return state
+---Register a provider that records the text it was handed.
+---@param name string
+---@param reply fun(text: string): string
+---@return fun(): string|nil captured
+local function capturing_provider(name, reply)
+  local captured
+  registry.register(name, {
+    translate = function(_, payload)
+      captured = payload.text
+      return reply(payload.text)
+    end,
+    estimate_cost = function()
+      return 0
+    end,
+  })
+  metaphrast.config.provider = name
+  return function()
+    return captured
   end
+end
 
-  local function show_echo_window(target_lang)
-    local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Hello world" })
+describe("blockwise replace", function()
+  before_each(function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+  end)
 
-    local done = false
-    metaphrast.translate_range_async(bufnr, 0, 1, {
-      target_lang = target_lang,
-      show_window = true,
-      replace = false,
-    }, {
-      on_success = function()
-        done = true
-      end,
-      on_error = function(err)
-        done = true
-        error(err)
-      end,
-    })
+  it("AC1: inserts the surplus wrapped line under the block instead of dropping it", function()
+    local original = { "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }
+    local bufnr = block_buffer(original, "// %s", 1, 2, 2, 15)
+    -- Headless Neovim never returns to the main loop between the seed and the
+    -- write, so both would land in one undo block; this breaks the sequence the
+    -- way returning for input does, making the undo assertion meaningful.
+    vim.bo[bufnr].undolevels = vim.bo[bufnr].undolevels
+    local seq_before = vim.fn.undotree().seq_cur
 
-    vim.wait(1000, function()
-      return done
+    local translated, applied = metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    assert.equals("hello there second line [echo]->es", translated)
+    assert.is_true(applied)
+    assert.same({
+      "  // hello there  TAIL1",
+      "  // second line  TAIL2",
+      "  // [echo]->es",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    -- The whole replacement is one undo step, surplus line included.
+    assert.equals(seq_before + 1, vim.fn.undotree().seq_cur)
+    vim.cmd("silent undo")
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC3: pads the surplus line with spaces when code sits left of the block", function()
+    local bufnr = block_buffer({ "foo(); // alpha beta", "bar(); // gamma delta", "baz();" }, "// %s", 1, 7, 2, 20)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- Seven spaces, not a second `bar();`: copying the left part verbatim would
+    -- inject a duplicate statement into the user's code.
+    assert.same({
+      "foo(); // alpha beta",
+      "bar(); // gamma delta",
+      "       // [echo]->es",
+      "baz();",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC4: clamps the columns when the block ends on a row shorter than its start", function()
+    local captured = capturing_provider("block_short_row", function(text)
+      return text .. " [cap]"
     end)
-    assert.is_true(done)
-  end
+    local bufnr = block_buffer({ "    // alpha beta gamma", "ab" }, "// %s", 1, 4, 2, 22)
 
-  it("closes snacks.win on CursorMoved", function()
-    metaphrast._reset_for_tests()
-    metaphrast.setup({ provider = "echo" })
-    local state = install_mock_snacks_win(1000)
+    local translated, applied, reason =
+      metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
 
-    show_echo_window("es")
-    vim.api.nvim_exec_autocmds("CursorMoved", { modeline = false })
-
-    assert.equals(1, state.closed)
+    -- `'>` lands before `'<` on the short last row, so both slices are empty
+    -- and the payload would be newlines only. That is nothing to translate, so
+    -- the provider is never reached and the buffer is left alone.
+    assert.equals("", translated)
+    assert.is_nil(captured())
+    assert.same({ "    // alpha beta gamma", "ab" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    -- A requested write-back that never happened is not a success: `nil` would
+    -- read as "no write-back was requested" and let callers report one.
+    assert.is_false(applied)
+    assert.equals("metaphrast: nothing to translate in the selection", reason)
   end)
 
-  it("leaves visual mode when CursorMoved closes snacks.win", function()
-    metaphrast._reset_for_tests()
-    metaphrast.setup({ provider = "echo" })
-    local state = install_mock_snacks_win(1001)
-    local feedkeys_calls = {}
-    vim.fn.mode = function()
-      return "v"
-    end
-    vim.api.nvim_feedkeys = function(keys, mode, escape_ks)
-      table.insert(feedkeys_calls, { keys = keys, mode = mode, escape_ks = escape_ks })
-    end
+  it("AC4b: keeps the clamped-empty region empty on a multibyte row", function()
+    local captured = capturing_provider("block_short_row_cjk", function(text)
+      return text .. " [cap]"
+    end)
+    -- Column 4 falls inside the 3-byte `日`; the short last row gives `ec < sc`.
+    local original = { "  日本語アイウ", "ab" }
+    local bufnr = block_buffer(original, "// %s", 1, 4, 2, 22)
 
-    show_echo_window("es")
-    feedkeys_calls = {}
-    vim.api.nvim_exec_autocmds("CursorMoved", { modeline = false })
+    local translated, applied, reason =
+      metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
 
-    local expected_esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
-    assert.equals(1, state.closed)
-    assert.equals(1, #feedkeys_calls)
-    assert.equals(expected_esc, feedkeys_calls[1].keys)
-    assert.equals("nx", feedkeys_calls[1].mode)
-    assert.is_false(feedkeys_calls[1].escape_ks)
+    -- Snapping `cstart` back and `cend` forward around the same codepoint would
+    -- reopen the emptied region and delete that character from the row.
+    assert.equals("", translated)
+    assert.is_nil(captured())
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    assert.is_false(applied)
+    assert.equals("metaphrast: nothing to translate in the selection", reason)
+    local cstart, cend = metaphrast._block_columns(original[1], 4, 2)
+    assert.equals(cstart, cend)
   end)
 
-  it("does not leave insert mode when CursorMovedI closes snacks.win", function()
-    metaphrast._reset_for_tests()
-    metaphrast.setup({ provider = "echo" })
-    local state = install_mock_snacks_win(1002)
-    local feedkeys_calls = {}
-    vim.fn.mode = function()
-      return "i"
-    end
-    vim.api.nvim_feedkeys = function(keys, mode, escape_ks)
-      table.insert(feedkeys_calls, { keys = keys, mode = mode, escape_ks = escape_ks })
-    end
+  it("AC5: keeps a multibyte block on codepoint boundaries", function()
+    local captured = capturing_provider("block_multibyte", function(text)
+      return text .. " [echo]->es"
+    end)
+    -- Column 16 falls inside the third byte of `の`.
+    local bufnr = block_buffer({ "  // 日本語のテスト", "  // second line", "x := 1" }, "// %s", 1, 2, 2, 15)
 
-    show_echo_window("es")
-    feedkeys_calls = {}
-    vim.api.nvim_exec_autocmds("CursorMovedI", { modeline = false })
+    local translated = metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
 
-    assert.equals(1, state.closed)
-    assert.equals(0, #feedkeys_calls)
+    assert.equals("日本語の second line", captured())
+    assert.is_nil(
+      translated:find("\239\191\189", 1, true),
+      "translation carries a replacement character: " .. translated
+    )
+    assert.same({
+      "  // 日本語のテスト",
+      "  // second line",
+      "  // [echo]->es",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 
-  it("does not feed escape for stale CursorMoved autocmds after a newer window already closed", function()
+  it("AC6: clamps a $-extended block to each row", function()
+    local bufnr =
+      block_buffer({ "  // hello there", "  // second line longer", "x := 1" }, "// %s", 1, 2, 2, 2147483646)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    assert.same({
+      "  // hello there second",
+      "  // line longer",
+      "  // [echo]->es",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC7: blanks the block region on rows the rendered lines do not reach", function()
+    capturing_provider("block_one_word", function()
+      return "uno"
+    end)
+    local rows = { "  // aaa bbb  T1", "  // ccc ddd  T2", "  // eee fff  T3", "z()" }
+    local bufnr = block_buffer(rows, "// %s", 1, 2, 3, 12)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- Frozen behavior: content moves up and rows 2-3 lose their leaders, keeping
+    -- only the text right of the block. Asserted so the trade-off stays visible.
+    assert.same({ "  // uno T1", "   T2", "   T3", "z()" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC8: never grows a leaderless block", function()
+    local bufnr = block_buffer({ "  hello there", "  second line", "x := 1" }, "", 1, 2, 2, 12)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- Without comment structure the layout path is skipped and reflow_lines
+    -- always returns exactly as many lines as it was given, so no line is added.
+    assert.same(
+      { "  hello there", "  second line [echo]->es", "x := 1" },
+      vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    )
+  end)
+
+  it("AC10: refuses a reply that would insert more than max_inserted_lines", function()
+    capturing_provider("block_flood", function()
+      return string.rep("x\n", 300)
+    end)
+    local original = { "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }
+    local bufnr = block_buffer(original, "// %s", 1, 2, 2, 15)
+
+    local _, applied, reason = metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- The rendered line count is the provider's to choose; refusing keeps a
+    -- runaway reply out of the buffer instead of silently truncating it.
+    assert.is_false(applied)
+    assert.truthy(reason:find("max_inserted_lines", 1, true), reason)
+    assert.truthy(reason:find("200", 1, true), reason)
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC11: measures the surplus pad with the source buffer's tabstop", function()
+    local bufnr =
+      block_buffer({ "\tfoo(); // alpha beta", "\tbar(); // gamma delta", "\tbaz();" }, "// %s", 1, 8, 2, 21)
+    vim.bo[bufnr].tabstop = 2
+    -- `strdisplaywidth` reads 'tabstop' from the *current* buffer, and the
+    -- hover float (or any other buffer) can be current when the write lands.
+    local elsewhere = vim.api.nvim_create_buf(false, true)
+    vim.bo[elsewhere].tabstop = 8
+    vim.api.nvim_set_current_buf(elsewhere)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- Nine columns: `\tfoo(); ` under tabstop 2, not the 15 tabstop 8 would give.
+    assert.same({
+      "\tfoo(); // alpha beta",
+      "\tbar(); // gamma delta",
+      "         // [echo]->es",
+      "\tbaz();",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC12: leaves a blank surplus line empty instead of pad-only whitespace", function()
+    capturing_provider("block_blank_surplus", function()
+      return "alpha beta gamma delta epsilon\n\nzeta"
+    end)
+    local bufnr = block_buffer({ "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }, "// %s", 1, 2, 2, 15)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    -- A pad-only line is trailing whitespace the user never wrote, and every
+    -- trim-on-save formatter would report it as their diff.
+    assert.same({
+      "  // alpha beta  TAIL1",
+      "  // gamma delta  TAIL2",
+      "  // epsilon",
+      "",
+      "",
+      "  // zeta",
+      "x := 1",
+    }, lines)
+    for i, line in ipairs(lines) do
+      assert.is_falsy(line:match("^%s+$"), string.format("line %d is whitespace only: %q", i, line))
+    end
+  end)
+
+  it("AC14: resolves the block columns at every boundary", function()
+    -- `abc日本語`: `日` is bytes 4-6, `本` 7-9, `語` 10-12.
+    local line = "abc日本語"
+    local cases = {
+      { "sc inside a codepoint snaps back", line, 4, 12, 3, 12 },
+      { "sc on the codepoint's last byte snaps back", line, 5, 12, 3, 12 },
+      { "ec inside a codepoint snaps forward", line, 0, 4, 0, 6 },
+      { "ec on the codepoint's last byte snaps forward", line, 0, 5, 0, 6 },
+      { "cstart clamped to the row end stays there", "ab", 6, 20, 2, 2 },
+      { "cend of zero is left alone", "日本語", 0, 0, 0, 0 },
+      { "an empty row yields an empty region", "", 4, 9, 0, 0 },
+      { "an ASCII block is untouched", "  // hello", 2, 10, 2, 10 },
+    }
+    for _, case in ipairs(cases) do
+      local label, subject, sc, ec, want_start, want_end = unpack(case)
+      local cstart, cend = metaphrast._block_columns(subject, sc, ec)
+      assert.equals(want_start, cstart, label .. " (cstart)")
+      assert.equals(want_end, cend, label .. " (cend)")
+    end
+  end)
+
+  it("AC15: snaps the start column back on a row that is not the block's first", function()
+    local captured = capturing_provider("block_mid_codepoint", function(text)
+      return text .. " [cap]"
+    end)
+    -- `sc = 2` is a codepoint boundary on row 1 but the second byte of `日` on
+    -- row 2, so only the per-row snap keeps that slice whole.
+    local bufnr = block_buffer({ "  hello there", " 日本語のテスト" }, "", 1, 2, 2, 21)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    assert.equals("hello there\n日本語のテスト", captured())
+    assert.same({ "  hello there", " 日本語のテスト [cap]" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC16: keeps a tab indent verbatim on the surplus line", function()
+    local bufnr = block_buffer({ "\t// hello there  TAIL1", "\t// second line  TAIL2", "x := 1" }, "// %s", 1, 1, 2, 14)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- The text left of the block is whitespace, so it is copied as-is and the
+    -- inserted line keeps the file's indent style rather than expanding it.
+    assert.same({
+      "\t// hello there  TAIL1",
+      "\t// second line  TAIL2",
+      "\t// [echo]->es",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC17: leaves the block's marks raw so one row's codepoints cannot widen another", function()
+    local captured = capturing_provider("block_mark_widening", function(text)
+      return text .. " [cap]"
+    end)
+    -- `'>` holds the first byte of `本` on the CJK end row. Snapping it forward
+    -- there — as charwise does — would move the block's shared end column two
+    -- bytes right, widening the ASCII row above onto text the user never
+    -- selected. `block_columns` re-snaps per row, so the CJK row is whole
+    -- either way and the entire difference lands on the other row.
+    local bufnr = block_buffer({ "  // abcdefgh", "  // 日本語" }, "// %s", 1, 2, 2, 8)
+
+    metaphrast.translate_selection(bufnr, "\22", { target_lang = "es" })
+
+    assert.equals("abcd 日本", captured())
+  end)
+end)
+
+describe("charwise replace", function()
+  before_each(function()
     metaphrast._reset_for_tests()
     metaphrast.setup({ provider = "echo" })
-    local state = install_mock_snacks_win(1003)
-    local feedkeys_calls = {}
-    vim.fn.mode = function()
-      return "v"
-    end
-    vim.api.nvim_feedkeys = function(keys, mode, escape_ks)
-      table.insert(feedkeys_calls, { keys = keys, mode = mode, escape_ks = escape_ks })
-    end
+  end)
 
-    show_echo_window("es")
-    show_echo_window("de")
-    feedkeys_calls = {}
-    vim.api.nvim_exec_autocmds("CursorMoved", { modeline = false })
+  it("AC13: snaps a charwise end column to the end of its codepoint", function()
+    local captured = capturing_provider("charwise_multibyte", function(text)
+      return text .. " [cap]"
+    end)
+    -- `'<` lands mid-`日` and `'>` holds the *first* byte of `語`, so making the
+    -- end exclusive by one byte would hand the provider two thirds of that
+    -- character, and an unsnapped start would sever the first one.
+    local bufnr = block_buffer({ "abc 日本語 def" }, "// %s", 1, 5, 1, 10)
 
-    assert.equals(2, state.closed)
-    assert.equals(1, #feedkeys_calls)
+    metaphrast.translate_selection(bufnr, "v", { replace = true, target_lang = "es" })
+
+    assert.equals("日本語", captured())
+    assert.same({ "abc 日本語 [cap] def" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+end)
+
+describe("linewise replace", function()
+  before_each(function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+  end)
+
+  it("AC18: splits a rendered line carrying provider newlines before writing it back", function()
+    capturing_provider("linewise_newline", function()
+      return "uno\ndos"
+    end)
+    local bufnr = block_buffer({ "  // hello there", "x := 1" }, "// %s", 1, 0, 1, 0)
+
+    local _, applied = metaphrast.translate_range(bufnr, 0, 1, { replace = true, target_lang = "es" })
+
+    -- `nvim_buf_set_lines` rejects an item containing a newline, so handing it
+    -- the rendered table raised `'replacement string' item contains newlines`
+    -- and left the caller with a traceback instead of a write. Reapplying the
+    -- leader to the line the provider split off is a separate layout question;
+    -- what this pins is that the write is legal and reports itself.
+    assert.is_true(applied)
+    assert.same({ "  // uno", "dos", "x := 1" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 end)
 
 describe("ui helper", function()
-  local original_notify
+  local ui = require("metaphrast.ui")
+  local notifier
+
+  local function stamp(entry)
+    return entry and (entry.updated or entry.added) or 0
+  end
+
+  local function newest()
+    local entries = notifier.get_history()
+    table.sort(entries, function(a, b)
+      return stamp(a) < stamp(b)
+    end)
+    return entries[#entries]
+  end
+
+  local function progress_entry()
+    return vim.tbl_filter(function(entry)
+      return entry.id == ui.PROGRESS_ID
+    end, notifier.get_history())[1]
+  end
 
   before_each(function()
-    original_notify = vim.notify
-  end)
-
-  after_each(function()
-    vim.notify = original_notify
-    package.loaded["snacks"] = nil
-    package.loaded["metaphrast.ui"] = nil
-  end)
-
-  it("falls back to vim.notify when snacks missing", function()
-    local messages = {}
-    vim.notify = function(msg, level)
-      table.insert(messages, { msg = msg, level = level })
-    end
-    package.loaded["snacks"] = false
-    local ui = require("metaphrast.ui")
-    ui.notify("hello", "info", { title = "t" })
-    assert.equals("hello", messages[1].msg)
-  end)
-
-  it("uses snacks when available", function()
-    local notified = {}
-    package.loaded["snacks"] = {
-      notify = {
-        info = function(msg, opts)
-          table.insert(notified, { msg = msg, opts = opts, level = "info" })
-        end,
-        warn = function(msg, opts)
-          table.insert(notified, { msg = msg, opts = opts, level = "warn" })
-        end,
-        notify = function(msg, opts)
-          table.insert(notified, { msg = msg, opts = opts, level = "notify" })
-        end,
-      },
-    }
-    local ui = require("metaphrast.ui")
-    ui.notify("hi", "warn", { title = "x" })
-    assert.equals("hi", notified[1].msg)
-    assert.equals("warn", notified[1].level)
-  end)
-
-  it("prompts with snacks input when available", function()
-    local received_default
-    local confirmed
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-      },
-      input = function(opts, cb)
-        received_default = opts.default
-        cb("ja")
-      end,
-    }
-    local ui = require("metaphrast.ui")
-    ui.prompt_target("es", function(value)
-      confirmed = value
-    end)
-    assert.equals("es", received_default)
-    assert.equals("ja", confirmed)
-  end)
-
-  it("renders translation in snacks.win when available", function()
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    local ui = require("metaphrast.ui")
-    ui._reset_for_tests()
-    ui.show_window("ciao", { provider = "echo", cached = true }, { target_lang = "es" })
-    assert.truthy(win_opts)
-    assert.equals("es · echo · cache", win_opts.title)
-    assert.equals("ciao", win_opts.text[1])
-    assert.equals("cursor", win_opts.relative)
-    assert.equals(1, win_opts.row)
-    assert.equals(0, win_opts.col)
-    assert.equals("rounded", win_opts.border)
-    assert.equals("center", win_opts.title_pos)
-    assert.equals("q/Esc: close · y: yank · move cursor to dismiss", win_opts.footer)
-    assert.equals("center", win_opts.footer_pos)
-    assert.is_true(win_opts.wo.wrap)
-    assert.is_true(win_opts.wo.linebreak)
-    assert.equals("markdown", win_opts.bo.filetype)
-  end)
-
-  it("applies the modern teal palette to the snacks.win popup", function()
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    local ui = require("metaphrast.ui")
-    ui._reset_for_tests()
-    ui.show_window("ciao", { provider = "echo" }, { target_lang = "es" })
-
-    assert.truthy(win_opts)
-    local winhl = win_opts.wo.winhighlight
-    assert.truthy(winhl, "expected wo.winhighlight to be set")
-    -- Border/title/footer routed to the metaphrast palette groups.
-    assert.truthy(winhl:find("FloatBorder:MetaphrastWinBorder", 1, true))
-    assert.truthy(winhl:find("FloatTitle:MetaphrastWinTitle", 1, true))
-    assert.truthy(winhl:find("FloatFooter:MetaphrastWinFooter", 1, true))
-    -- Snacks' body/separator baseline is preserved, not clobbered.
-    assert.truthy(winhl:find("Normal:SnacksNormal", 1, true))
-    assert.truthy(winhl:find("WinSeparator:SnacksWinSeparator", 1, true))
-
-    -- The teal highlight group is actually registered.
-    local border_hl = vim.api.nvim_get_hl(0, { name = "MetaphrastWinBorder" })
-    assert.equals(0x2dd4bf, border_hl.fg)
-
-    package.loaded["snacks"] = nil
-    ui._reset_for_tests()
-  end)
-
-  it("falls back to vim.echo when snacks missing", function()
-    package.loaded["snacks"] = nil
-    local ui = require("metaphrast.ui")
-    ui._reset_for_tests()
-    local original_echo = vim.api.nvim_echo
-    local echoed
-    vim.api.nvim_echo = function(chunks)
-      echoed = chunks
-    end
-    ui.show_window("hello", nil, { target_lang = "fr" })
-    vim.api.nvim_echo = original_echo
-    assert.truthy(echoed)
-    assert.equals("hello", echoed[1][1])
-  end)
-
-  it("allows overriding cursor positioning defaults", function()
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    local ui = require("metaphrast.ui")
-    ui._reset_for_tests()
-    ui.show_window(
-      "hola",
-      nil,
-      { win = { relative = "editor", row = 5, col = 10, border = "double", wo = { wrap = false } } }
-    )
-    assert.truthy(win_opts)
-    assert.equals("editor", win_opts.relative)
-    assert.equals(5, win_opts.row)
-    assert.equals(10, win_opts.col)
-    assert.equals("double", win_opts.border)
-    assert.is_false(win_opts.wo.wrap)
-  end)
-
-  it("applies padding from config when showing window", function()
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    local ui = require("metaphrast.ui")
-    ui._reset_for_tests()
-
-    metaphrast._reset_for_tests()
-    metaphrast.setup({
-      provider = "echo",
-      ui = {
-        win = {
-          padding = { top = 1, bottom = 1, left = 2, right = 2 },
-        },
-      },
-    })
-
-    ui.show_window("ciao", { provider = "echo" }, { win = {} })
-
-    assert.truthy(win_opts)
-    assert.equals("    ", win_opts.text[1])
-    assert.equals("  ciao  ", win_opts.text[2])
-    assert.equals("    ", win_opts.text[3])
-
-    package.loaded["snacks"] = nil
-    ui._reset_for_tests()
-  end)
-
-  it("sizes window height for wrapped long lines", function()
     metaphrast._reset_for_tests()
     metaphrast.setup({ provider = "echo" })
-
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    local ui = require("metaphrast.ui")
-    ui._reset_for_tests()
-    ui.set_defaults({})
-
-    local original_lines = vim.o.lines
-    vim.o.lines = 60
-    local long = string.rep("a", 400)
-    ui.show_window(long, nil, { win = { width = 40 } })
-    vim.o.lines = original_lines
-
-    assert.truthy(win_opts)
-    assert.equals(40, win_opts.width)
-    assert.is_true(
-      win_opts.height >= 10,
-      "expected height >= 10 for a 400-char line wrapped at 40, got " .. tostring(win_opts.height)
-    )
-
-    package.loaded["snacks"] = nil
-    ui._reset_for_tests()
+    notifier = ui.require_snacks().notifier
   end)
 
-  it("does not multiply height when wrap is disabled", function()
-    metaphrast._reset_for_tests()
-    metaphrast.setup({ provider = "echo" })
+  it("loads the real snacks module through the single access point", function()
+    local snacks = ui.require_snacks()
 
-    local win_opts
-    package.loaded["snacks"] = {
-      notify = {
-        info = function() end,
-        warn = function() end,
-        notify = function() end,
-      },
-      win = function(opts)
-        win_opts = opts
-        return { show = function() end }
-      end,
-    }
-    local ui = require("metaphrast.ui")
-    ui._reset_for_tests()
-    ui.set_defaults({})
+    assert.is_table(snacks)
+    assert.truthy(snacks.win)
+    assert.truthy(snacks.notifier)
+    assert.equals(snacks, ui.require_snacks())
+  end)
 
-    local long = string.rep("a", 400)
-    ui.show_window(long, nil, { win = { width = 40, wo = { wrap = false } } })
+  it("adds a fresh history entry per notify with the requested level", function()
+    local before = stamp(newest())
 
-    assert.truthy(win_opts)
-    assert.equals(1, win_opts.height)
+    ui.notify("hi", "warn")
 
-    package.loaded["snacks"] = nil
-    ui._reset_for_tests()
+    local entry = newest()
+    assert.is_true(stamp(entry) > before)
+    assert.equals("hi", entry.msg)
+    assert.equals("warn", entry.level)
+    assert.equals("Metaphrast", entry.title)
+    assert.not_equals(ui.PROGRESS_ID, entry.id)
+  end)
+
+  it("updates one progress toast in place by id", function()
+    local before = stamp(progress_entry())
+
+    local done = ui.progress("Translating...")
+
+    local entry = progress_entry()
+    assert.is_true(stamp(entry) > before)
+    assert.equals("Translating...", entry.msg)
+    assert.equals(0, entry.timeout)
+    local count = #notifier.get_history()
+
+    done("Translated via echo", "info")
+
+    entry = progress_entry()
+    assert.equals("Translated via echo", entry.msg)
+    assert.equals("info", entry.level)
+    assert.equals(metaphrast.config.ui.notify.timeout, entry.timeout)
+    assert.equals(count, #notifier.get_history())
+
+    done("ignored", "error")
+    assert.equals("Translated via echo", progress_entry().msg)
+  end)
+
+  it("keeps a failed progress toast on screen", function()
+    local done = ui.progress("Translating...")
+
+    done("Translation failed: boom", "error")
+
+    local entry = progress_entry()
+    assert.equals("error", entry.level)
+    assert.equals(0, entry.timeout)
+  end)
+
+  it("prompts through snacks input with the configured default", function()
+    ui.prompt_target("es", function() end)
+
+    local input_win
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "snacks_input" then
+        input_win = win
+      end
+    end
+    assert.truthy(input_win, "snacks input window not opened")
+    assert.same({ "es" }, vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(input_win), 0, -1, false))
+    vim.api.nvim_win_close(input_win, true)
   end)
 end)
