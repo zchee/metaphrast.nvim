@@ -10,7 +10,25 @@ local snacks_ref = os.getenv("SNACKS_REF") or "882c996cf28183f4d63640de0b4c02ec8
 if vim.fn.isdirectory(snacks_dir) == 0 then
   vim.fn.system({ "git", "clone", "https://github.com/folke/snacks.nvim", snacks_dir })
 end
+
+---Whether the snacks checkout sits at `snacks_ref` (a commit, tag or branch).
+---@return boolean
+local function snacks_at_ref()
+  local head = vim.trim(vim.fn.system({ "git", "-C", snacks_dir, "rev-parse", "--verify", "HEAD" }))
+  local want = vim.trim(vim.fn.system({ "git", "-C", snacks_dir, "rev-parse", "--verify", snacks_ref .. "^{commit}" }))
+  return vim.v.shell_error == 0 and head == want
+end
+
+-- A pre-existing clone may predate the pinned ref or sit on another one; a
+-- silent checkout failure would run the suite against the wrong snacks.
 vim.fn.system({ "git", "-C", snacks_dir, "checkout", "--quiet", snacks_ref })
+if not snacks_at_ref() then
+  vim.fn.system({ "git", "-C", snacks_dir, "fetch", "--quiet", "origin" })
+  vim.fn.system({ "git", "-C", snacks_dir, "checkout", "--quiet", snacks_ref })
+  if not snacks_at_ref() then
+    error(string.format("tests: %s is not at SNACKS_REF %s after fetch and checkout", snacks_dir, snacks_ref))
+  end
+end
 
 vim.opt.rtp:append(".")
 vim.opt.rtp:append(plenary_dir)

@@ -49,6 +49,9 @@ jobs:
           path: |
             ${{ runner.temp }}/plenary.nvim
             ${{ runner.temp }}/snacks.nvim
+          # plenary is unpinned by design (the test runner, not code under
+          # test), so its cache entry is only refreshed when SNACKS_REF moves;
+          # bump the ref or the key to pick up a newer plenary.
           key: nvim-deps-${{ matrix.os }}-plenary-master-snacks-${{ env.SNACKS_REF }}
 
       - name: run tests
