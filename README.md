@@ -9,7 +9,7 @@ Translate text inside Neovim through multiple backends with caching and simple c
 - File-backed cache under `stdpath('cache')/metaphrast` to avoid paying twice.
 - Cost estimation per provider with a configurable safety ceiling.
 - Plenary job backend by default for faster, non-blocking HTTP; curl fallback when Plenary is unavailable.
-- Async-friendly UI command `:MetaphrastTranslateUI` that prompts for target language, reports progress via Snacks, and shows results in a Snacks.win floating window when available (falls back to `vim.ui.input`/`vim.notify` + echo when Snacks is missing).
+- Async by default: `:MetaphrastTranslate` prompts for the target language when omitted, reports progress via Snacks, and shows results in a Snacks.win floating window unless replacing (falls back to `vim.ui.input`/`vim.notify` + echo when Snacks is missing).
 
 ## Backends
 
@@ -66,10 +66,10 @@ require("metaphrast").setup({
       gcp_project_id = "your-billing-or-quota-project", -- optional override for x-goog-user-project
     },
     deepl = {
-      api_key = os.getenv("DEEPL_API_KEY"),
+      api_key = os.getenv("DEEPL_AUTH_KEY"),
     },
     gemini = {
-      api_key = os.getenv("GOOGLE_GENAI_KEY"),
+      api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
       model = "gemini-2.5-flash",
     },
     openrouter = {
@@ -121,14 +121,12 @@ problems stay visible.
 
 - `:MetaphrastTranslate [source] [target]`  
   - Operates on the given range (default current line).  
-  - Use `!` to replace buffer text; otherwise it echoes the translation.  
+  - Use `!` to replace buffer text; otherwise it shows the translation in a Snacks.win floating window (falls back to `vim.notify` + echo when Snacks is missing).  
+  - Prompts for the target language when omitted (uses Snacks.input if available, otherwise `vim.ui.input`).  
+  - Runs asynchronously and reports progress via Snacks.notify.  
   - Examples:  
     - `:'<,'>MetaphrastTranslate en es!` (replace visual selection)  
-    - `:MetaphrastTranslate es` (auto-detect source, echo Spanish translation)
-- `:MetaphrastTranslateUI [source] [target]`  
-  - Async path using the Plenary backend.  
-  - Prompts for target language when omitted (uses Snacks.input if available, otherwise `vim.ui.input`).  
-  - Shows progress via Snacks.notify and renders the translation in a Snacks.win floating window when not replacing; falls back to `vim.notify` + echo when Snacks is missing.
+    - `:MetaphrastTranslate es` (auto-detect source, show Spanish translation)
 - `:MetaphrastCacheClear` — purge on-disk cache.
 
 ## Cost guidance (2025-12)
