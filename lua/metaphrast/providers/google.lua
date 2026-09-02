@@ -1,100 +1,23 @@
-local util = require("metaphrast.util")
+local gcp_auth = require("metaphrast.providers.gcp_auth")
 
 local M = {}
 
 M.name = "google"
-
-local uv = vim.uv or vim.loop
-local OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
-
-local token_cache = {
-  access_token = nil,
-  adc_path = nil,
-  expires_at = 0,
-}
-
----@param path string|nil
----@return boolean
-local function file_exists(path)
-  if not path or path == "" then
-    return false
-  end
-  return uv.fs_stat(path) ~= nil
-end
-
----@param path string
----@return table
-local function load_adc_credentials(path)
-  local ok, lines = pcall(vim.fn.readfile, path)
-  if not ok then
-    error("google ADC credentials could not be read: " .. path)
-  end
-  local raw = table.concat(lines, "\n")
-  local decoded_ok, credentials = pcall(vim.json.decode, raw)
-  if not decoded_ok or type(credentials) ~= "table" then
-    error("google ADC credentials are not valid JSON: " .. path)
-  end
-  if credentials.type ~= "authorized_user" then
-    error("google ADC credentials have unsupported type: " .. tostring(credentials.type))
-  end
-  if not credentials.client_id or not credentials.client_secret or not credentials.refresh_token then
-    error("google ADC credentials are missing required authorized_user fields")
-  end
-  return credentials
-end
-
----@param _http fun(method: string, url: string, opts: table): table
----@param adc_path string
----@return string
-local function refresh_adc_access_token(_http, adc_path)
-  local now = os.time()
-  if token_cache.access_token and token_cache.adc_path == adc_path and now < (token_cache.expires_at - 60) then
-    return token_cache.access_token
-  end
-
-  local credentials = load_adc_credentials(adc_path)
-  local body = table.concat({
-    "client_id=" .. util.urlencode(credentials.client_id),
-    "client_secret=" .. util.urlencode(credentials.client_secret),
-    "refresh_token=" .. util.urlencode(credentials.refresh_token),
-    "grant_type=refresh_token",
-  }, "&")
-  local res = _http("POST", OAUTH_TOKEN_URL, {
-    headers = { "Content-Type: application/x-www-form-urlencoded" },
-    data = body,
-  })
-  if res.code ~= 0 then
-    error("google ADC token refresh failed: " .. (res.stderr or "curl error code " .. res.code))
-  end
-  if res.http_status and res.http_status >= 400 then
-    error("google ADC token refresh failed (HTTP " .. res.http_status .. "): " .. (res.stdout or ""))
-  end
-
-  local parsed = vim.json.decode(res.stdout)
-  if not parsed or not parsed.access_token then
-    error("google ADC token refresh returned unexpected payload")
-  end
-
-  token_cache.access_token = parsed.access_token
-  token_cache.adc_path = adc_path
-  token_cache.expires_at = now + tonumber(parsed.expires_in or 3600)
-  return token_cache.access_token
-end
 
 ---@param cfg table
 ---@param _http fun(method: string, url: string, opts: table): table
 ---@return string
 ---@return string[]
 local function resolve_google_auth(cfg, _http)
-  if file_exists(cfg.adc_path) then
-    local credentials = load_adc_credentials(cfg.adc_path)
-    local access_token = refresh_adc_access_token(_http, cfg.adc_path)
+  if gcp_auth.file_exists(cfg.adc_path) then
+    local credentials = gcp_auth.load_adc_credentials(cfg.adc_path)
+    local access_token = gcp_auth.refresh_access_token(_http, cfg.adc_path)
     local headers = {
       "Authorization: Bearer " .. access_token,
       "Content-Type: application/json",
     }
-    local project_id = cfg.gcp_project_id or credentials.quota_project_id
-    if project_id and project_id ~= "" then
+    local project_id = gcp_auth.resolve_project_id(cfg, credentials)
+    if project_id then
       table.insert(headers, "x-goog-user-project: " .. project_id)
     end
     return cfg.base_url, headers
@@ -128,8 +51,8 @@ local function blocked_method_hint(body)
 end
 
 function M.validate(cfg)
-  if file_exists(cfg.adc_path) then
-    local ok, credentials = pcall(load_adc_credentials, cfg.adc_path)
+  if gcp_auth.file_exists(cfg.adc_path) then
+    local ok, credentials = pcall(gcp_auth.load_adc_credentials, cfg.adc_path)
     if not ok then
       return false, credentials
     end
@@ -183,9 +106,7 @@ function M.estimate_cost(payload)
 end
 
 function M._reset_for_tests()
-  token_cache.access_token = nil
-  token_cache.adc_path = nil
-  token_cache.expires_at = 0
+  gcp_auth._reset_for_tests()
 end
 
 return M
