@@ -317,8 +317,9 @@ make lint   # luacheck
 
 `make test` git-clones plenary.nvim into `$PLENARY_DIR` (default
 `/tmp/plenary.nvim`) and snacks.nvim into `$SNACKS_DIR` (default
-`/tmp/snacks.nvim`), checking snacks out at the pinned `$SNACKS_REF`. Specs use
-the built-in `echo` provider, so no test makes a network call.
+`/tmp/snacks.nvim`). Both clones track upstream HEAD, and an existing checkout
+is used as it stands. Specs use the built-in `echo` provider, so no test makes a
+network call.
 
 Run a single spec with `PlenaryBustedDirectory`, which is what passes
 `minimal_init.lua` to the child process (`PlenaryBustedFile` does not, so snacks
