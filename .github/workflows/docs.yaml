@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: panvimdoc
-        uses: kdheepak/panvimdoc@main
+        uses: kdheepak/panvimdoc@1f9433df889d4ab3daa5ea52c7069cb489ad47d6 # main @ 2026-04-12
         with:
           vimdoc: metaphrast
           version: "Neovim >= 0.8.0"
