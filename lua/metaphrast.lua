@@ -422,33 +422,43 @@ end
 ---and has already been reset by the time a `-range` command body runs. So the
 ---selection is re-entered with `gv` and `winsaveview().curswant` is read, behind
 ---a guard chain that falls back to the plain clamp (`false`) whenever any link
----fails: the caller's mode is blockwise, the target buffer is current, the
----editor is in normal mode, `gv` succeeds and restores blockwise, the restored
----region spans the same rows, `curswant` is `v:maxcol`, and the raw end-mark
----column reaches the end row's length.
+---fails: the caller's mode is blockwise, the raw end-mark column reaches the end
+---row's length, the target buffer is current, the editor is in normal mode, `gv`
+---succeeds and restores blockwise, the restored region spans the same rows, and
+---`curswant` is `v:maxcol`.
 ---
 ---`ec` must be the *raw* `'>` column, read before this runs: `gv` normalises an
 ---out-of-range end mark to the row end, exactly as Vim's own `check_cursor()`
 ---does, so a value read afterwards would no longer be the caller's.
 ---
----Side effects are two `ModeChanged` events (`n:\22` then `\22:n`) per blockwise
----resolution and nothing else — no `CursorMoved`, `WinScrolled` or
----`TextChanged` — so an open hover, which listens on `CursorMoved`,
----`CursorMovedI`, `BufLeave`, `InsertEnter` and `BufWinLeave`, cannot be closed
----by the probe. The mode guard keeps those two events off the charwise and
----linewise paths entirely. The probe is skipped, and the plain clamp used, when
+---The probe runs only for a `$` candidate — a block whose end mark already
+---reaches the end row's length. For those, its side effects are two
+---`ModeChanged` events (`n:\22` then `\22:n`) and a narrowed `'>`: the `<Esc>`
+---writes back the region `gv` restored, and `gv` clamped an out-of-range end
+---mark to the row end on the way in (measured `{0,2,41,0}` → `{0,2,7,0}`), so a
+---caller that set the mark past the row keeps the narrowed value. `winrestview`
+---restores the view, not the marks. Nothing else fires — no `CursorMoved`,
+---`WinScrolled` or `TextChanged` — so an open hover, which listens on
+---`CursorMoved`, `CursorMovedI`, `BufLeave`, `InsertEnter` and `BufWinLeave`,
+---cannot be closed by the probe. Every other selection skips it outright: a
+---fixed-width block on the end-mark guard, and the charwise and linewise paths
+---on the mode guard. The probe is also skipped, and the plain clamp used, when
 ---the target buffer is not current or the editor is not exactly in normal mode;
 ---the latter includes a `<Cmd>` mapping invoked straight from visual mode.
 ---
 ---Residual (risk R11): a caller that sets `'<`/`'>` programmatically with a raw
 ---end column at or past the end row's byte length, in a buffer whose last real
 ---visual selection was a `$` block, still resolves `true` here — `gv` reports
----blockwise with a stale `curswant` and the last guard cannot separate it from a
----genuine `$`. Its failure mode is a silent wrong write, not a refusal: every
----row longer than the end row loses its tail. No interactive path reaches it,
----because a real `<Esc>` refreshes the marks and the stored selection together,
----and a row cross-check does not help — `gv` restores the region from the marks,
----so the rows always agree.
+---blockwise with a stale `curswant` and the remaining guards cannot separate it
+---from a genuine `$`. Its failure mode is a silent wrong write, not a refusal:
+---every row longer than the end row loses its tail. This is reachable through
+---the shipped command, not only through direct API calls: after one real
+---`<C-v>$` block in a buffer, another plugin or script that sets `'<`/`'>` with
+---the conventional `2147483647` end-of-line sentinel — a common idiom in text
+---object and operator plugins — followed by `:'<,'>MetaphrastTranslate`, lands
+---here with every guard satisfied. Rate it low-to-moderate likelihood rather
+---than programmatic-only. A row cross-check does not help — `gv` restores the
+---region from the marks, so the rows always agree.
 ---@param bufnr integer
 ---@param mode string Visual mode the caller resolved.
 ---@param sr integer 0-indexed first row.
@@ -458,6 +468,14 @@ end
 ---@return boolean to_eol
 local function block_is_to_eol(bufnr, mode, sr, er, ec, end_line)
   if mode ~= "\22" and mode ~= "" then
+    return false
+  end
+  -- Hoisted out of the probe's own conjunction: both operands are read before
+  -- `gv` runs, so testing here is a pure short-circuit — the result is identical
+  -- on every input — and it keeps a block that stops inside the end row out of
+  -- visual mode altogether. A `$` leaves `'>` at exactly the end row's length;
+  -- anything shorter cannot have come from one.
+  if ec < #end_line then
     return false
   end
   if vim.api.nvim_get_current_buf() ~= bufnr then
@@ -474,7 +492,7 @@ local function block_is_to_eol(bufnr, mode, sr, er, ec, end_line)
     -- future `gv` that restored the region from the stored selection instead.
     local anchor, cursor = vim.fn.line("v"), vim.fn.line(".")
     local rows_match = math.min(anchor, cursor) - 1 == sr and math.max(anchor, cursor) - 1 == er
-    to_eol = rows_match and vim.fn.winsaveview().curswant == vim.v.maxcol and ec >= #end_line
+    to_eol = rows_match and vim.fn.winsaveview().curswant == vim.v.maxcol
   end
   if vim.fn.mode() ~= "n" then
     vim.cmd("normal! \27")

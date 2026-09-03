@@ -1275,6 +1275,27 @@ local function visual_block_buffer(buf_lines, commentstring, cursor, keys)
   return bufnr
 end
 
+---Record every `ModeChanged` transition until the returned function is called.
+---The `gv` probe is the only construct in this plugin that enters visual mode,
+---so the event pair is the observable a user's own `ModeChanged` autocmd sees;
+---asserting it pins which selections pay for the probe and which skip it.
+---@return fun(): string[] stop Removes the recorder and returns `old:new` pairs.
+local function record_mode_changes()
+  local events = {}
+  local group = vim.api.nvim_create_augroup("MetaphrastSpecModeChanged", { clear = true })
+  vim.api.nvim_create_autocmd("ModeChanged", {
+    group = group,
+    pattern = "*",
+    callback = function(args)
+      table.insert(events, args.match)
+    end,
+  })
+  return function()
+    vim.api.nvim_del_augroup_by_id(group)
+    return events
+  end
+end
+
 describe("blockwise $ selection", function()
   local dollar_lines = { "  // alpha beta gamma", "  // x", "  // delta epsilon" }
 
@@ -1292,8 +1313,12 @@ describe("blockwise $ selection", function()
     -- marks alone cannot answer this.
     assert.same({ 0, 2, 7, 0 }, vim.fn.getpos("'>"))
 
+    local stop = record_mode_changes()
     metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
 
+    -- A `$` candidate is the one shape that still pays for the probe: exactly
+    -- one round trip into blockwise visual and back, and nothing else.
+    assert.same({ "n:\22", "\22:n" }, stop())
     -- Row 1 contributes its whole comment, not the four bytes the end row's
     -- length would clamp it to.
     assert.equals("alpha beta gamma x", captured())
@@ -1314,8 +1339,13 @@ describe("blockwise $ selection", function()
     end)
     local bufnr = visual_block_buffer(dollar_lines, "// %s", { 1, 2 }, "<C-v>1j$h<Esc>")
 
+    local stop = record_mode_changes()
     metaphrast.translate_selection(bufnr, "\22", { replace = false, target_lang = "es" })
 
+    -- `h` leaves `'>` inside the end row, which a `$` never does, so the probe
+    -- is skipped outright: a fixed-width block costs a user's `ModeChanged`
+    -- autocmd nothing and leaves `'>` exactly where the caller set it.
+    assert.same({}, stop())
     -- `h` clears `curswant`, so the probe reports no `$` and both rows clamp to
     -- the shared end column exactly as they did before the probe existed.
     assert.equals("a x", captured())
