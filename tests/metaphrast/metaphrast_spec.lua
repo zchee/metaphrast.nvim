@@ -1041,12 +1041,13 @@ describe("blockwise replace", function()
       "  // alpha beta  TAIL1",
       "  // gamma delta  TAIL2",
       "  // epsilon",
-      "  // ",
+      "  //",
       "  // zeta",
       "x := 1",
     }, lines)
     for i, line in ipairs(lines) do
       assert.is_falsy(line:match("^%s+$"), string.format("line %d is whitespace only: %q", i, line))
+      assert.is_falsy(line:match("%s$"), string.format("line %d has trailing whitespace: %q", i, line))
     end
   end)
 
@@ -1114,6 +1115,31 @@ describe("blockwise replace", function()
     metaphrast.translate_selection(bufnr, "\22", { target_lang = "es" })
 
     assert.equals("abcd 日本", captured())
+  end)
+
+  it("AC-D3: leaves no trailing whitespace on a blank line in a surplus block", function()
+    capturing_provider("block_blank_mismatch", function()
+      return "one\n\ntwo\n\nthree"
+    end)
+    local bufnr = block_buffer({ "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }, "// %s", 1, 2, 2, 15)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    -- On this path the blank only becomes a genuine `""` once the reply is
+    -- split per paragraph; before that it still carried an embedded newline
+    -- and the pad-only line was manufactured by the flatten instead.
+    assert.same({
+      "  // one  TAIL1",
+      "  //  TAIL2",
+      "  // two",
+      "  //",
+      "  // three",
+      "x := 1",
+    }, lines)
+    for i, line in ipairs(lines) do
+      assert.is_falsy(line:match("%s$"), string.format("line %d has trailing whitespace: %q", i, line))
+    end
   end)
 
   it("AC-B2: keeps the leader on a block line the provider split with a newline", function()
@@ -1230,6 +1256,26 @@ describe("linewise replace", function()
     -- every line the translation produced has to carry the leader.
     for i = 1, 2 do
       assert.truthy(lines[i]:match("^%s*// "), string.format("line %d lost its leader: %q", i, lines[i]))
+    end
+  end)
+
+  it("AC-D2: keeps a blank comment line bare when the paragraph counts match", function()
+    capturing_provider("linewise_blank_between", function()
+      return "uno\ndos"
+    end)
+    -- Three comment rows give `para_count == 2`, which the two-paragraph reply
+    -- matches, so the *match* branch runs and hands `comment.reapply` a genuine
+    -- `""`. A two-row range would give `para_count == 1`, route into the
+    -- mismatch branch, and pass for the wrong reason: that output has no
+    -- leader-only line in it at all.
+    local bufnr = block_buffer({ "// alpha", "//", "// beta", "func F() {}" }, "// %s", 1, 0, 4, 0)
+
+    metaphrast.translate_range(bufnr, 0, 3, { replace = true, target_lang = "es" })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    assert.same({ "// uno", "//", "// dos", "func F() {}" }, lines)
+    for i, line in ipairs(lines) do
+      assert.is_falsy(line:match("%s$"), string.format("line %d has trailing whitespace: %q", i, line))
     end
   end)
 

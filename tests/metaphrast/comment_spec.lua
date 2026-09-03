@@ -156,6 +156,24 @@ describe("comment.reapply", function()
     local result = comment.reapply("hello\nworld", nil, nil)
     assert.same({ "hello", "world" }, result)
   end)
+
+  it("AC-D1: emits a bare leader for a blank line rather than a trailing space", function()
+    local info = {
+      { indent = "", has_comment = true },
+      { indent = "", has_comment = true },
+      { indent = "", has_comment = true },
+    }
+    local result = comment.reapply({ "x", "", "y" }, info, { prefix = "// ", suffix = "" })
+    -- The prefix's own trailing space is there to separate the leader from
+    -- content. With no content it is trailing whitespace the user never wrote,
+    -- and every trim-on-save formatter reports it as their diff.
+    assert.same({ "// x", "//", "// y" }, result)
+
+    -- A suffix-bearing commentstring never ends in our whitespace, so the
+    -- blank keeps its full delimiters and only the interior stays as written.
+    local block = comment.reapply({ "" }, { { indent = "  ", has_comment = true } }, { prefix = "/* ", suffix = " */" })
+    assert.same({ "  /*  */" }, block)
+  end)
 end)
 
 describe("comment round-trip", function()
