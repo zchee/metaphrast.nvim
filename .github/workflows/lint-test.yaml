@@ -6,6 +6,9 @@ env:
   # snacks.nvim is a hard runtime dependency and the test suite drives the real
   # thing, so it is pinned: the window option surface is what the specs assert.
   SNACKS_REF: 882c996cf28183f4d63640de0b4c02ec886d01f2
+  # plenary.nvim is the test runner and will be archived in Q2 2026, so an
+  # unpinned clone is a moving target; tests/minimal_init.lua reads this.
+  PLENARY_REF: 74b06c6c75e4eeb3108ec01852001636d85a932b
 
 jobs:
   stylua:
@@ -49,10 +52,7 @@ jobs:
           path: |
             ${{ runner.temp }}/plenary.nvim
             ${{ runner.temp }}/snacks.nvim
-          # plenary is unpinned by design (the test runner, not code under
-          # test), so its cache entry is only refreshed when SNACKS_REF moves;
-          # bump the ref or the key to pick up a newer plenary.
-          key: nvim-deps-${{ matrix.os }}-plenary-master-snacks-${{ env.SNACKS_REF }}
+          key: nvim-deps-${{ matrix.os }}-plenary-${{ env.PLENARY_REF }}-snacks-${{ env.SNACKS_REF }}
 
       - name: run tests
         run: make test
@@ -78,7 +78,7 @@ jobs:
           path: |
             ${{ runner.temp }}/plenary.nvim
             ${{ runner.temp }}/snacks.nvim
-          key: nvim-deps-ubuntu-26.04-plenary-master-snacks-${{ env.SNACKS_REF }}
+          key: nvim-deps-ubuntu-26.04-plenary-${{ env.PLENARY_REF }}-snacks-${{ env.SNACKS_REF }}
 
       - name: clone render-markdown.nvim
         run: |

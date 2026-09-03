@@ -9,9 +9,35 @@ local function die(msg)
   os.exit(1)
 end
 
+-- plenary.nvim is the test runner, and upstream announced that the repository
+-- will be archived in Q2 2026, so an unpinned clone is a moving target that can
+-- change under the suite at any time. The pin is also what currently protects
+-- plenary `Job`'s `interactive` default of true, which is what allocates the
+-- stdin pipe the http transport writes its curl config document to.
 local plenary_dir = os.getenv("PLENARY_DIR") or "/tmp/plenary.nvim"
+local plenary_ref = os.getenv("PLENARY_REF") or "74b06c6c75e4eeb3108ec01852001636d85a932b"
 if vim.fn.isdirectory(plenary_dir) == 0 then
   vim.fn.system({ "git", "clone", "https://github.com/nvim-lua/plenary.nvim", plenary_dir })
+end
+
+---Whether the plenary checkout sits at `plenary_ref` (a commit, tag or branch).
+---@return boolean
+local function plenary_at_ref()
+  local head = vim.trim(vim.fn.system({ "git", "-C", plenary_dir, "rev-parse", "--verify", "HEAD" }))
+  local want =
+    vim.trim(vim.fn.system({ "git", "-C", plenary_dir, "rev-parse", "--verify", plenary_ref .. "^{commit}" }))
+  return vim.v.shell_error == 0 and head == want
+end
+
+-- A pre-existing clone may predate the pinned ref or sit on another one; a
+-- silent checkout failure would run the suite against the wrong plenary.
+vim.fn.system({ "git", "-C", plenary_dir, "checkout", "--quiet", plenary_ref })
+if not plenary_at_ref() then
+  vim.fn.system({ "git", "-C", plenary_dir, "fetch", "--quiet", "origin" })
+  vim.fn.system({ "git", "-C", plenary_dir, "checkout", "--quiet", plenary_ref })
+  if not plenary_at_ref() then
+    die(string.format("tests: %s is not at PLENARY_REF %s after fetch and checkout", plenary_dir, plenary_ref))
+  end
 end
 
 -- snacks.nvim is a hard dependency; specs run against the real plugin pinned
