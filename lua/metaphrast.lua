@@ -65,24 +65,40 @@ local function register_builtin()
 end
 
 local DEFAULT_MAX_INSERTED_LINES = 200
+local DEFAULT_MAX_CHARS = 8000
 local warned_max_inserted_lines = false
+local warned_max_chars = false
 
----Resolve the write cap, ignoring a value that is not a number.
+---Whether a configured bound can be compared against a size at all.
+---
+---`type(v) == "number"` is not enough. NaN and infinity are numbers, and every
+---comparison against them is false, so either one silently removes the bound
+---the caller thinks they configured -- the opposite of the refusal the string
+---case produced, and just as wrong.
+---@param value any
+---@return boolean
+local function is_finite_number(value)
+  return type(value) == "number" and value == value and value < math.huge and value > -math.huge
+end
+
+---Resolve the write cap, ignoring a value outside its domain.
 ---
 ---The cap is compared against a row count, so a string here raised
 ---`attempt to compare string with number` and the write failed with a
----traceback instead of a refusal. The ignored value is reported once.
+---traceback instead of a refusal. A negative value refused every write,
+---including a reply that adds no rows at all, and NaN or infinity disabled the
+---runaway-reply protection outright. The ignored value is reported once.
 ---@return integer
 local function resolve_max_inserted_lines()
   local configured = M.config.max_inserted_lines
-  if type(configured) == "number" then
-    return configured
+  if is_finite_number(configured) and configured >= 0 then
+    return math.floor(configured)
   end
   if configured ~= nil and not warned_max_inserted_lines then
     warned_max_inserted_lines = true
     ui.notify(
       string.format(
-        "metaphrast: max_inserted_lines must be a number, got %s; using %d",
+        "metaphrast: max_inserted_lines must be a number >= 0, got %s; using %d",
         vim.inspect(configured),
         DEFAULT_MAX_INSERTED_LINES
       ),
@@ -90,6 +106,54 @@ local function resolve_max_inserted_lines()
     )
   end
   return DEFAULT_MAX_INSERTED_LINES
+end
+
+---Resolve the request ceiling, ignoring a value outside its domain.
+---
+---It bounds the request and, multiplied by four, the reply, so the same
+---hazards apply: a string raised `attempt to compare number with string`, a
+---non-positive value refused every request, and NaN or infinity disabled both
+---bounds at once. The ignored value is reported once.
+---@return integer
+local function resolve_max_chars()
+  local configured = M.config.max_chars
+  if is_finite_number(configured) and configured > 0 then
+    return math.floor(configured)
+  end
+  if configured ~= nil and not warned_max_chars then
+    warned_max_chars = true
+    ui.notify(
+      string.format(
+        "metaphrast: max_chars must be a number > 0, got %s; using %d",
+        vim.inspect(configured),
+        DEFAULT_MAX_CHARS
+      ),
+      "warn"
+    )
+  end
+  return DEFAULT_MAX_CHARS
+end
+
+---Refuse a reply that dwarfs the request it answers.
+---
+---The request is already bounded by `max_chars`, so a reply orders of magnitude
+---larger is a provider fault rather than a translation, and every downstream
+---consumer (wrap, layout, the buffer write) pays for it.
+---@param translated string
+---@param text string The request the reply answers.
+---@param max_reply integer
+local function refuse_oversize_reply(translated, text, max_reply)
+  if #translated > max_reply then
+    error(
+      string.format(
+        "provider reply too long (%d chars for a %d-char request > %d); translation discarded",
+        #translated,
+        #text,
+        max_reply
+      ),
+      0
+    )
+  end
 end
 
 local function validate_provider(name, config_table)
@@ -107,6 +171,11 @@ end
 function M.setup(opts)
   ui.require_snacks()
   register_builtin()
+  -- Both reports are once per session, and `setup()` is the only place the
+  -- values can change. Without this a user who fixed one bad value and later
+  -- set another heard nothing for the rest of the session.
+  warned_max_inserted_lines = false
+  warned_max_chars = false
   local merged = cfg.merge(opts)
   local ok, err = validate_provider(merged.provider, merged)
   if not ok then
@@ -137,10 +206,11 @@ local function perform_translate(http_fn, text, opts)
   end
   local target_lang = options.target_lang or config_table.target_lang
   local source_lang = options.source_lang or config_table.source_lang
-  local max_chars = config_table.max_chars or 8000
+  local max_chars = resolve_max_chars()
   if #text > max_chars then
     error(string.format("text too long (%d chars > %d)", #text, max_chars))
   end
+  local max_reply = max_chars * 4
   local payload = {
     text = text,
     target_lang = target_lang,
@@ -162,6 +232,10 @@ local function perform_translate(http_fn, text, opts)
   local cached = cache.get(config_table.cache, key)
   if cached then
     local cleaned_cached = util.normalize_newlines(cached)
+    -- The guard post-dates the cache, so an entry a runaway provider wrote
+    -- before it existed is on disk for the whole TTL. Refusing it here is what
+    -- keeps the hit path from replaying the fault the miss path now rejects.
+    refuse_oversize_reply(cleaned_cached, text, max_reply)
     if cleaned_cached ~= cached then
       cache.put(config_table.cache, key, cleaned_cached)
     end
@@ -170,22 +244,8 @@ local function perform_translate(http_fn, text, opts)
 
   local translated = registry.translate(provider_name, http_fn, payload)
   translated = util.normalize_newlines(translated)
-  -- The request is already bounded by `max_chars`, so a reply orders of
-  -- magnitude larger is a provider fault rather than a translation, and every
-  -- downstream consumer (wrap, layout, the buffer write) pays for it. Refuse
-  -- before `cache.put`, or the fault outlives the call.
-  local max_reply = max_chars * 4
-  if #translated > max_reply then
-    error(
-      string.format(
-        "provider reply too long (%d chars for a %d-char request > %d); translation discarded",
-        #translated,
-        #text,
-        max_reply
-      ),
-      0
-    )
-  end
+  -- Refuse before `cache.put`, or the fault outlives the call.
+  refuse_oversize_reply(translated, text, max_reply)
   cache.put(config_table.cache, key, translated)
   return translated, { cached = false, provider = provider_name, icon = provider_icon }
 end
@@ -1140,6 +1200,7 @@ function M._reset_for_tests()
   M.config = cfg.defaults()
   cfg._reset_for_tests()
   warned_max_inserted_lines = false
+  warned_max_chars = false
   http_builder._reset_for_tests()
   -- The isolation boundary between specs: `register_builtin` no longer resets,
   -- so a provider one spec registered would otherwise leak into the next.

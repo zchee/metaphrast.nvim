@@ -81,6 +81,15 @@ is `v1.0.0`.
   naming the value, and the default of 200 applies. It previously raised
   `attempt to compare string with number` from the write path, so the caller
   got a traceback instead of a refusal.
+- The same check now covers the value, not only the type, and `max_chars` gets
+  it too: both reject NaN and infinity (which silently removed the bound,
+  because every comparison against them is false), `max_inserted_lines` rejects
+  a negative value (which refused every write, including a reply that added no
+  rows) and `max_chars` a non-positive one, and each falls back to its default
+  with one warning naming the value. `setup()` re-arms both warnings, so a
+  second bad value in the same session is still reported. A cached reply larger
+  than four times `max_chars` is now refused on the cache hit as well, instead
+  of being replayed for the rest of its TTL.
 - Default `ui.win.padding` is now `{ top = 0, bottom = 0, left = 1, right = 1 }`
   (was `{ 0, 0, 0, 0 }`).
 - Default `ui.win.backdrop` is now `false` (was `40`).

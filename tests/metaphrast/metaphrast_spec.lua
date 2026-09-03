@@ -245,6 +245,87 @@ describe("translation core", function()
     assert.equals(2, calls)
   end)
 
+  it("AC-C4: refuses an oversize cached reply without calling the provider", function()
+    local calls = 0
+    registry.register("flood_cached", {
+      translate = function()
+        calls = calls + 1
+        return string.rep("a", 32000)
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metaphrast.config.provider = "flood_cached"
+    -- Memory-only: a TTL this short never reaches the disk cache.
+    metaphrast.config.cache.ttl = 5
+    local text = string.rep("q", 137)
+
+    -- Seed the entry while it is still within the guard, exactly as a runaway
+    -- provider did for a user running a build that predates the guard.
+    assert.equals(32000, #metaphrast.translate(text, { target_lang = "fr" }))
+    assert.equals(1, calls)
+
+    -- Lower the ceiling so the stored reply is now oversize. The request itself
+    -- still fits, so the refusal can only come from the reply guard.
+    metaphrast.config.max_chars = 137
+    local ok, err = pcall(metaphrast.translate, text, { target_lang = "fr" })
+
+    -- A hit returned before the guard replayed the fault for the whole TTL,
+    -- with the write cap as the only thing between it and the buffer.
+    assert.is_false(ok)
+    err = tostring(err)
+    assert.truthy(err:find("32000", 1, true), err)
+    assert.truthy(err:find("137", 1, true), err)
+    assert.truthy(err:find("548", 1, true), err)
+    -- Refused, not re-fetched: the provider is not asked to repeat the fault.
+    assert.equals(1, calls)
+  end)
+
+  it("AC-C5: ignores a max_chars outside its domain, warns once, and uses the default", function()
+    local ui = require("metaphrast.ui")
+    local function warnings()
+      return vim.tbl_filter(function(entry)
+        return type(entry.msg) == "string" and entry.msg:find("max_chars must be", 1, true) ~= nil
+      end, ui.require_snacks().notifier.get_history())
+    end
+    registry.register("echo_chars", {
+      translate = function(_, payload)
+        return payload.text .. "!"
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metaphrast.config.provider = "echo_chars"
+    metaphrast.config.cache.enabled = false
+    local before = #warnings()
+
+    ---Translate one short text with `value` configured.
+    ---@param value any
+    ---@return boolean ok
+    ---@return string translated
+    local function translate_with(value)
+      metaphrast.config.max_chars = value
+      return pcall(metaphrast.translate, "hi", { target_lang = "fr" })
+    end
+
+    -- `-1` refused every request, `"8000"` raised `attempt to compare number
+    -- with string`, and NaN/infinity silently disabled both the request bound
+    -- and the reply guard derived from it. All four now take the default.
+    for _, value in ipairs({ -1, 0 / 0, math.huge, "8000" }) do
+      local ok, out = translate_with(value)
+      assert.is_true(ok, tostring(value) .. ": " .. tostring(out))
+      assert.equals("hi!", out)
+    end
+
+    -- One toast for the whole session, and it names the first bad value.
+    local reported = warnings()
+    assert.equals(before + 1, #reported)
+    assert.equals("warn", reported[#reported].level)
+    assert.truthy(reported[#reported].msg:find("-1", 1, true), reported[#reported].msg)
+  end)
+
   it("rejects calls that exceed cost guard", function()
     registry.register("expensive", {
       estimate_cost = function()
@@ -1594,6 +1675,78 @@ describe("linewise replace", function()
     metaphrast._reset_for_tests()
     metaphrast.setup({ provider = "echo" })
     assert.is_true((flood("200")))
+    assert.equals(before + 2, #warnings())
+  end)
+
+  ---Replace the two comment rows with `cap` configured and `reply` returned.
+  ---@param cap any
+  ---@param reply string
+  ---@param original string[]
+  ---@return boolean applied
+  ---@return string|nil reason
+  ---@return integer bufnr
+  local function replace_with_cap(cap, reply, original)
+    capturing_provider("cap_domain_" .. tostring(cap) .. "_" .. #reply, function()
+      return reply
+    end)
+    local bufnr = block_buffer(original, "// %s", 1, 0, 2, 0)
+    metaphrast.config.max_inserted_lines = cap
+    local _, applied, reason = metaphrast.translate_range(bufnr, 0, 1, { replace = true, target_lang = "es" })
+    return applied, reason, bufnr
+  end
+
+  it("AC-F7: ignores a max_inserted_lines outside its domain and still caps the write", function()
+    local ui = require("metaphrast.ui")
+    local function warnings()
+      return vim.tbl_filter(function(entry)
+        return type(entry.msg) == "string" and entry.msg:find("max_inserted_lines must be", 1, true) ~= nil
+      end, ui.require_snacks().notifier.get_history())
+    end
+    local original = { "  // hello there", "  // second line", "x := 1" }
+    local flood = string.rep("x\n", 300)
+    local before = #warnings()
+
+    -- `-1` is a number, so the type guard passed it through and every
+    -- comparison against it was true: a reply that fills the block's own rows
+    -- and adds none was refused as over the limit, saying only `(-1)`.
+    local applied, reason = replace_with_cap(-1, "uno\ndos", original)
+    assert.is_true(applied, tostring(reason))
+
+    -- NaN and infinity are the mirror image: every comparison against them is
+    -- false, so the runaway-reply cap was silently off and a 300-line reply
+    -- reached the buffer.
+    for _, cap in ipairs({ 0 / 0, math.huge }) do
+      local flooded, why, bufnr = replace_with_cap(cap, flood, original)
+      assert.is_false(flooded, tostring(cap))
+      assert.truthy(why:find("200", 1, true), why)
+      assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    end
+
+    -- One toast for the three bad values, naming the first of them.
+    local reported = warnings()
+    assert.equals(before + 1, #reported)
+    assert.equals("warn", reported[#reported].level)
+    assert.truthy(reported[#reported].msg:find("-1", 1, true), reported[#reported].msg)
+  end)
+
+  it("AC-F8: re-arms the cap warning on a second setup, not only on a reset", function()
+    local ui = require("metaphrast.ui")
+    local function warnings()
+      return vim.tbl_filter(function(entry)
+        return type(entry.msg) == "string" and entry.msg:find("max_inserted_lines must be", 1, true) ~= nil
+      end, ui.require_snacks().notifier.get_history())
+    end
+    local original = { "  // hello there", "  // second line", "x := 1" }
+    local before = #warnings()
+
+    assert.is_false((replace_with_cap("200", string.rep("x\n", 300), original)))
+    assert.equals(before + 1, #warnings())
+
+    -- The flag was session-scoped and only `_reset_for_tests` cleared it, so a
+    -- user who fixed one bad value and later set another heard nothing for the
+    -- rest of the session. `setup()` is where the value can actually change.
+    metaphrast.setup({ provider = "echo" })
+    assert.is_false((replace_with_cap(-1, string.rep("x\n", 300), original)))
     assert.equals(before + 2, #warnings())
   end)
 end)
