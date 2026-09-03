@@ -196,6 +196,100 @@ describe("http transport", function()
     end)
   end)
 
+  describe("plenary fallback warning", function()
+    local server
+    local loaded_job
+    local preload_job
+
+    before_each(function()
+      -- `package.loaded[...] = false` does not stop `require`; a preload that
+      -- raises is what makes `pcall(require, "plenary.job")` fail.
+      loaded_job = package.loaded["plenary.job"]
+      preload_job = package.preload["plenary.job"]
+      package.loaded["plenary.job"] = nil
+      package.preload["plenary.job"] = function()
+        error("forced: plenary.job unavailable")
+      end
+    end)
+
+    after_each(function()
+      package.loaded["plenary.job"] = loaded_job
+      package.preload["plenary.job"] = preload_job
+      if server and not server:is_closing() then
+        server:close()
+      end
+      server = nil
+      http._reset_for_tests()
+    end)
+
+    it("AC-G2: warns once per built client and still completes every request", function()
+      local seen = {}
+      http._reset_for_tests()
+      http.notify = function(msg, level)
+        table.insert(seen, { msg = msg, level = level })
+      end
+      local port
+      server, port = start_listener()
+      local url = string.format("http://127.0.0.1:%d/v2", port)
+      local client = http.build({ backend = "plenary", timeout = 10000 })
+
+      for _ = 1, 3 do
+        local res = client("POST", url, { headers = { "Content-Type: application/json" }, data = "{}" })
+        assert.equals(0, res.code)
+        assert.equals(200, res.http_status)
+      end
+
+      -- The warning used to fire on every request, and plenary is optional, so
+      -- the default backend made it a toast per translation.
+      assert.equals(1, #seen)
+      assert.truthy(seen[1].msg:find("plenary.job unavailable", 1, true), seen[1].msg)
+
+      -- The flag belongs to the client, not the session: a rebuilt client (a
+      -- second `setup()`) reports the condition again.
+      local rebuilt = http.build({ backend = "plenary", timeout = 10000 })
+      local res = rebuilt("POST", url, { headers = {}, data = "{}" })
+      assert.equals(0, res.code)
+      assert.equals(2, #seen)
+    end)
+  end)
+
+  describe("notifier wiring", function()
+    after_each(function()
+      require("metaphrast")._reset_for_tests()
+    end)
+
+    it("AC-G3: defaults to vim.notify at module load, without reaching snacks", function()
+      local loaded_http = package.loaded["metaphrast.http"]
+      local loaded_root = package.loaded["metaphrast"]
+      package.loaded["metaphrast.http"] = nil
+      package.loaded["metaphrast"] = nil
+
+      local ok, fresh = pcall(require, "metaphrast")
+      local fresh_http = package.loaded["metaphrast.http"]
+      package.loaded["metaphrast.http"] = loaded_http
+      package.loaded["metaphrast"] = loaded_root
+
+      -- `M.build` runs at load, before `setup()` calls `require_snacks()`, so
+      -- wiring `ui.notify` there would raise for a user without snacks.
+      assert.is_true(ok)
+      assert.is_table(fresh)
+      assert.equals(vim.notify, fresh_http.notify)
+    end)
+
+    it("AC-G3: setup() repoints the notifier and a reset restores the default", function()
+      local metaphrast = require("metaphrast")
+      local ui = require("metaphrast.ui")
+      http._reset_for_tests()
+      assert.equals(vim.notify, http.notify)
+
+      metaphrast.setup({ provider = "echo" })
+      assert.equals(ui.notify, http.notify)
+
+      metaphrast._reset_for_tests()
+      assert.equals(vim.notify, http.notify)
+    end)
+  end)
+
   describe("wire round-trip", function()
     local server
 

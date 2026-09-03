@@ -114,6 +114,9 @@ function M.setup(opts)
     merged.provider = "echo"
   end
   M.config = merged
+  -- Only here: `ui.notify` reaches snacks, which `require_snacks()` above has
+  -- just proved is present. Wiring it at load time would raise without it.
+  http_builder.notify = ui.notify
   M.http = http_builder.build(merged.http)
   M.http_async = http_builder.build_async(merged.http)
   cfg.warn_unknown_win_keys(opts and opts.ui and opts.ui.win, ui.notify)
@@ -1119,6 +1122,7 @@ function M._reset_for_tests()
   M.config = cfg.defaults()
   cfg._reset_for_tests()
   warned_max_inserted_lines = false
+  http_builder._reset_for_tests()
   -- The isolation boundary between specs: `register_builtin` no longer resets,
   -- so a provider one spec registered would otherwise leak into the next.
   registry.reset()

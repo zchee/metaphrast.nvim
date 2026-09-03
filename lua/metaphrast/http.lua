@@ -7,6 +7,20 @@ local M = {}
 local util = require("metaphrast.util")
 local uv = vim.uv
 
+---Sink for the transport's own warnings.
+---
+---It defaults to `vim.notify` because `M.build` runs when `metaphrast` is
+---loaded, before `setup()` can call `require_snacks()`; wiring `ui.notify`
+---here would raise for a user without snacks. `metaphrast.setup()` repoints
+---it once snacks is known to be there.
+---@type fun(msg: string, level: string|number|nil): any
+M.notify = vim.notify
+
+-- Which built clients have already reported the plenary fallback. Keyed by the
+-- client so a rebuilt client reports the condition again, weak so a discarded
+-- client does not keep an entry alive.
+local warned = setmetatable({}, { __mode = "k" })
+
 local function build_request_url(url, query)
   if not query then
     return url
@@ -116,6 +130,9 @@ end
 ---@param cfg MetaphrastHttp
 ---@return fun(method: string, url: string, opts: table): table
 function M.build(cfg)
+  -- Identity for this client's warn-once state; plenary being absent is a
+  -- property of the session, so repeating it per request is noise.
+  local client = {}
   return function(method, url, opts)
     local args, config = build_request(method, url, opts)
     if cfg.backend == "plenary" then
@@ -123,7 +140,10 @@ function M.build(cfg)
       if res then
         return res
       end
-      vim.notify("metaphrast: plenary.job unavailable, falling back to curl", vim.log.levels.WARN)
+      if not warned[client] then
+        warned[client] = true
+        M.notify("metaphrast: plenary.job unavailable, falling back to curl", vim.log.levels.WARN)
+      end
     end
     return run_with_system(args, config, cfg.timeout or 20000)
   end
@@ -183,6 +203,12 @@ function M.build_async(cfg)
     end
     job:start()
   end, 4)
+end
+
+---Restore the default notifier and forget which clients have warned.
+function M._reset_for_tests()
+  M.notify = vim.notify
+  warned = setmetatable({}, { __mode = "k" })
 end
 
 return M
