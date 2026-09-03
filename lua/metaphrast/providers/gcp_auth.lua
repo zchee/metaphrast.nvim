@@ -88,17 +88,60 @@ function M.refresh_access_token(_http, adc_path, provider)
   return token_cache.access_token
 end
 
+---What a project id may contain. GCP's own ids are letters, digits and `-`;
+---a legacy domain-scoped id (`example.com:project`) adds `.` and `:`. Nothing
+---else can name a project, and the characters this excludes are exactly the
+---ones that would do something else instead: CR/LF splits the
+---`x-goog-user-project` header (curl's config parser unescapes them back), and
+---`/`, `?` or `#` re-targets the URL path `google_llm` builds from the id.
+local PROJECT_ID_PATTERN = "^[%w][%w%-%.:]*$"
+
+---Name where a configured project id came from, so the error points at the
+---place to fix it. `config.defaults()` seeds `gcp_project_id` from the gcloud
+---environment, so by the time it reaches here a value the user never wrote is
+---indistinguishable from one they did, except by comparison.
+---@param project_id string
+---@return string source
+local function config_project_id_source(project_id)
+  if project_id == vim.env.GOOGLE_CLOUD_PROJECT then
+    return "GOOGLE_CLOUD_PROJECT"
+  end
+  if project_id == vim.env.GCLOUD_PROJECT then
+    return "GCLOUD_PROJECT"
+  end
+  return "gcp_project_id"
+end
+
 ---Resolve the Google Cloud project to bill and attribute quota to.
+---
+---The result is concatenated, unencoded, into the `x-goog-user-project` header
+---of an ADC-Bearer-authenticated request and into `google_llm`'s v3 URL path,
+---so it is validated here, once, rather than at each of the four call sites.
 ---@param cfg table
 ---@param credentials table|nil
+---@param provider string|nil Provider name used to label errors (default "google").
 ---@return string|nil project_id
-function M.resolve_project_id(cfg, credentials)
+function M.resolve_project_id(cfg, credentials, provider)
   local project_id = cfg.gcp_project_id
-  if (not project_id or project_id == "") and credentials then
+  local source = "gcp_project_id"
+  if project_id and project_id ~= "" then
+    source = config_project_id_source(project_id)
+  elseif credentials then
     project_id = credentials.quota_project_id
+    source = "the ADC quota_project_id"
   end
   if not project_id or project_id == "" then
     return nil
+  end
+  if not project_id:match(PROJECT_ID_PATTERN) then
+    error(
+      string.format(
+        "%s provider: %s is not a usable project id: %s",
+        provider or "google",
+        source,
+        vim.inspect(project_id)
+      )
+    )
   end
   return project_id
 end

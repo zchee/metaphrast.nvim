@@ -134,6 +134,10 @@ the ADC file's `quota_project_id`, in that order — the same order `google_llm`
 uses. Set `providers.google.gcp_project_id` to force one, or set it to the
 empty string to fall back to the ADC file's project when either environment
 variable is exported. Billing and quota are charged to whichever project wins.
+Whichever source it comes from, the id must look like one — letters, digits,
+`-`, `.` and `:`, starting with a letter or digit — because it is sent as a
+header value and, for `google_llm`, as part of the request URL; anything else
+is refused with the source named.
 
 The `google_llm` backend calls Cloud Translation's `general/translation-llm`
 model instead of the NMT model. With ADC it uses Advanced v3

@@ -71,6 +71,14 @@ is `v1.0.0`.
   the project billed and charged for quota may change.** An explicit
   `providers.google.gcp_project_id` still wins, and setting it to the empty
   string still falls back to the ADC file's `quota_project_id`.
+- A Google Cloud project id is now checked before it is used, whichever source
+  it came from (`gcp_project_id`, `GOOGLE_CLOUD_PROJECT`/`GCLOUD_PROJECT`, or
+  the ADC file's `quota_project_id`). It travels unencoded into the
+  `x-goog-user-project` header and into `google_llm`'s request URL, so a value
+  containing CR/LF, whitespace, `/`, `?` or `#` would have injected a header or
+  re-targeted the request rather than named a project. Such a value is now
+  refused with the source named; legacy domain-scoped ids
+  (`example.com:project`) stay valid.
 - `setup()` no longer resets the provider registry, so a provider registered
   through `register_provider()` survives it. A user registration wins over the
   built-in of the same name in either order, and `setup()` names any built-in

@@ -57,7 +57,14 @@ function M.validate(cfg)
   elseif not cfg.api_key or cfg.api_key == "" then
     return false, "google_llm provider requires api_key or ADC credentials"
   end
-  if not gcp_auth.resolve_project_id(cfg, credentials) then
+  -- The resolver raises on a value that cannot name a project; validate()
+  -- reports instead, so `setup()` keeps falling back to echo rather than
+  -- handing the user a traceback.
+  local resolved, project_id = pcall(gcp_auth.resolve_project_id, cfg, credentials, M.name)
+  if not resolved then
+    return false, tostring(project_id)
+  end
+  if not project_id then
     return false, "google_llm provider requires gcp_project_id (or an ADC quota_project_id)"
   end
   return true
@@ -79,7 +86,7 @@ function M.translate(_http, payload)
   if gcp_auth.file_exists(cfg.adc_path) then
     use_adc = true
     local credentials = gcp_auth.load_adc_credentials(cfg.adc_path, M.name)
-    local project_id = gcp_auth.resolve_project_id(cfg, credentials)
+    local project_id = gcp_auth.resolve_project_id(cfg, credentials, M.name)
     if not project_id then
       error("google_llm provider requires gcp_project_id (or an ADC quota_project_id)")
     end
@@ -103,7 +110,7 @@ function M.translate(_http, payload)
     if not cfg.api_key or cfg.api_key == "" then
       error("google_llm provider requires api_key or ADC credentials")
     end
-    local project_id = gcp_auth.resolve_project_id(cfg, nil)
+    local project_id = gcp_auth.resolve_project_id(cfg, nil, M.name)
     if not project_id then
       error("google_llm provider requires gcp_project_id (or an ADC quota_project_id)")
     end
