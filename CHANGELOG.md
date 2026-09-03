@@ -78,7 +78,12 @@ is `v1.0.0`.
   containing CR/LF, whitespace, `/`, `?` or `#` would have injected a header or
   re-targeted the request rather than named a project. Such a value is now
   refused with the source named; legacy domain-scoped ids
-  (`example.com:project`) stay valid.
+  (`example.com:project`) stay valid. The `google` backend now resolves the id
+  before it exchanges the ADC refresh token, so a rejected value costs no
+  request at all instead of one wasted OAuth round trip that also left an
+  unusable access token in the shared cache, and `google.validate` reports it,
+  so `setup()` warns and falls back to `echo` rather than accepting the
+  provider and failing at the first translation.
 - `providers.google_llm.location` is now checked the same way. It is another
   segment of the same v3 URL the project id feeds, so a value containing `/`,
   `?`, `#` or CR/LF would have re-targeted the request rather than named a

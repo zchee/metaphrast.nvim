@@ -405,6 +405,37 @@ describe("google provider", function()
     assert.truthy(err:find("GOOGLE_CLOUD_PROJECT", 1, true), err)
   end)
 
+  it("refuses an unsafe project id before spending the ADC refresh token", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "proj\r\nX-Injected: yes"
+
+    -- The refresh exchanges client_secret + refresh_token for an access token
+    -- this request can never use, and leaves it in the cache the other Google
+    -- providers share. The id is refused either way, so resolve it first and
+    -- spend nothing.
+    local ok, err, calls = translate_with({})
+
+    assert.is_false(ok)
+    assert.truthy(err:find("GOOGLE_CLOUD_PROJECT", 1, true), err)
+    assert.equals(0, #calls, err)
+  end)
+
+  it("reports an unsafe project id out of validate instead of accepting it", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "proj\r\nX-Injected: yes"
+
+    -- `config.defaults()` seeds `gcp_project_id` from the environment, so this
+    -- is what setup() actually validates. google_llm.validate already reports;
+    -- google's accepted the provider and surfaced the problem only at the first
+    -- translate, after the exchange.
+    local ok, err = google.validate({ adc_path = adc_path, gcp_project_id = "proj\r\nX-Injected: yes" })
+
+    assert.is_false(ok)
+    err = tostring(err)
+    assert.truthy(err:find("google provider", 1, true), err)
+    assert.truthy(err:find("GOOGLE_CLOUD_PROJECT", 1, true), err)
+  end)
+
   it("accepts a legacy domain-scoped project id", function()
     write_google_adc("quota-project")
 

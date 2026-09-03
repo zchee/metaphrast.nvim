@@ -11,12 +11,16 @@ M.name = "google"
 local function resolve_google_auth(cfg, _http)
   if gcp_auth.file_exists(cfg.adc_path) then
     local credentials = gcp_auth.load_adc_credentials(cfg.adc_path)
+    -- Resolve before the refresh: an unusable id refuses the request anyway,
+    -- and exchanging the refresh token first spends a credential on a call
+    -- that cannot be made, leaving a minted access token in the cache the
+    -- other Google providers share.
+    local project_id = gcp_auth.resolve_project_id(cfg, credentials, M.name)
     local access_token = gcp_auth.refresh_access_token(_http, cfg.adc_path)
     local headers = {
       "Authorization: Bearer " .. access_token,
       "Content-Type: application/json",
     }
-    local project_id = gcp_auth.resolve_project_id(cfg, credentials)
     if project_id then
       table.insert(headers, "x-goog-user-project: " .. project_id)
     end
@@ -30,11 +34,27 @@ local function resolve_google_auth(cfg, _http)
   }
 end
 
+---Validate provider config from config.providers.google.
+---
+---ADC is preferred; an API key falls back to the same v2 endpoint. A project id
+---is optional here -- it only adds `x-goog-user-project` -- but an unusable one
+---has to be reported now, or `setup()` accepts the provider and the value
+---surfaces at the first translate instead.
+---@param cfg table
+---@return boolean ok
+---@return string|nil err
 function M.validate(cfg)
   if gcp_auth.file_exists(cfg.adc_path) then
     local ok, credentials = pcall(gcp_auth.load_adc_credentials, cfg.adc_path)
     if not ok then
-      return false, credentials
+      return false, tostring(credentials)
+    end
+    -- The resolver raises on a value that cannot name a project; validate()
+    -- reports instead, so `setup()` falls back to echo with one warning rather
+    -- than handing the user a traceback. google_llm already does this.
+    local resolved, project_id = pcall(gcp_auth.resolve_project_id, cfg, credentials, M.name)
+    if not resolved then
+      return false, tostring(project_id)
     end
     return credentials ~= nil
   end
