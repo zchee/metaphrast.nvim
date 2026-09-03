@@ -1063,10 +1063,20 @@ describe("blockwise replace", function()
       { "cend of zero is left alone", "日本語", 0, 0, 0, 0 },
       { "an empty row yields an empty region", "", 4, 9, 0, 0 },
       { "an ASCII block is untouched", "  // hello", 2, 10, 2, 10 },
+      -- A `$` block has no shared end column: `to_eol` replaces the clamp on
+      -- `ec` with the row's own length. Every row here has `ec < #line`, the
+      -- only shape that separates the two calls — `math.min(ec, #line)` already
+      -- returns `#line` when the mark reaches or passes the row's end.
+      { "a fixed block stops at its end column", "  // hello there  TAIL", 2, 4, 2, 4 },
+      { "a $ block runs to the row's own end", "  // hello there  TAIL", 2, 4, 2, 22, true },
+      { "a $ block still resolves a multibyte row", "  // 日本語", 2, 5, 2, 14, true },
+      { "a $ block leaves a clamped-empty row empty", "ab", 6, 20, 2, 2, true },
     }
     for _, case in ipairs(cases) do
-      local label, subject, sc, ec, want_start, want_end = unpack(case)
-      local cstart, cend = metaphrast._block_columns(subject, sc, ec)
+      local label, subject, sc, ec, want_start, want_end, to_eol = unpack(case)
+      -- A trailing `nil` is indistinguishable from omitting the argument, so the
+      -- rows without `to_eol` are the plain three-argument call.
+      local cstart, cend = metaphrast._block_columns(subject, sc, ec, to_eol)
       assert.equals(want_start, cstart, label .. " (cstart)")
       assert.equals(want_end, cend, label .. " (cend)")
     end
@@ -1158,6 +1168,132 @@ describe("blockwise replace", function()
       "  // dos  T2",
       "x := 1",
     }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+end)
+
+---Drive a real visual selection with `feedkeys` so the editor's own stored
+---selection is established. `block_buffer` sets `'<`/`'>` through
+---`nvim_buf_set_mark` alone, which never records a stored selection and so can
+---never reproduce `$`: the marks a `$` block leaves are byte-identical to those
+---of a fixed-width block wider than its end row.
+---
+---Every caller gets a fresh buffer, and no fixture outside this file's `$` cases
+---may reuse one: a buffer that has held a real `$` block keeps that selection,
+---and a later mark-only fixture on it would reach the residual documented at
+---`block_is_to_eol`.
+---@param buf_lines string[]
+---@param commentstring string
+---@param cursor integer[] `{ row, col }` with a 1-indexed row and 0-indexed col.
+---@param keys string Keys in `vim.keycode` notation, ending back in normal mode.
+---@return integer bufnr
+local function visual_block_buffer(buf_lines, commentstring, cursor, keys)
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.bo[bufnr].commentstring = commentstring
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, buf_lines)
+  vim.api.nvim_win_set_cursor(0, cursor)
+  vim.api.nvim_feedkeys(vim.keycode(keys), "x", false)
+  return bufnr
+end
+
+describe("blockwise $ selection", function()
+  local dollar_lines = { "  // alpha beta gamma", "  // x", "  // delta epsilon" }
+
+  before_each(function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+  end)
+
+  it("AC-E1: translates every row of a $ block to its own end", function()
+    local captured = capturing_provider("block_dollar", function()
+      return "uno dos"
+    end)
+    local bufnr = visual_block_buffer(dollar_lines, "// %s", { 1, 2 }, "<C-v>1j$<Esc>")
+    -- `'>` holds the end row's real column, never `v:maxcol`, which is why the
+    -- marks alone cannot answer this.
+    assert.same({ 0, 2, 7, 0 }, vim.fn.getpos("'>"))
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- Row 1 contributes its whole comment, not the four bytes the end row's
+    -- length would clamp it to.
+    assert.equals("alpha beta gamma x", captured())
+    -- The block is now 19 columns wide, so the one-line reply fills row 1 and
+    -- row 2's slice is replaced by nothing, leaving that row's indent alone.
+    -- That collapse is `replace_selection_text`'s existing behaviour for any
+    -- reply with fewer lines than the block has rows.
+    assert.same({
+      "  // uno dos",
+      "  ",
+      "  // delta epsilon",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC-E2: leaves a $h block resolving as a fixed-width block", function()
+    local captured = capturing_provider("block_dollar_back", function()
+      return "uno dos"
+    end)
+    local bufnr = visual_block_buffer(dollar_lines, "// %s", { 1, 2 }, "<C-v>1j$h<Esc>")
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = false, target_lang = "es" })
+
+    -- `h` clears `curswant`, so the probe reports no `$` and both rows clamp to
+    -- the shared end column exactly as they did before the probe existed.
+    assert.equals("a x", captured())
+    assert.same(dollar_lines, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC-E3: leaves cursor, view, mode, marks, jumplist and register untouched", function()
+    capturing_provider("block_dollar_probe", function()
+      return "uno dos"
+    end)
+    local bufnr = visual_block_buffer(dollar_lines, "// %s", { 1, 2 }, "<C-v>1j$<Esc>")
+    local function snapshot()
+      return {
+        curpos = vim.fn.getcurpos(),
+        view = vim.fn.winsaveview(),
+        mode = vim.fn.mode(),
+        start_mark = vim.fn.getpos("'<"),
+        end_mark = vim.fn.getpos("'>"),
+        jumps = #vim.fn.getjumplist()[1],
+        register = vim.fn.getreg('"'),
+        regtype = vim.fn.getregtype('"'),
+      }
+    end
+    local before = snapshot()
+
+    -- Read path only: a write-back relocates `'<`/`'>` through `mark_adjust`
+    -- whatever the probe does, so mark invariance can only be asserted here.
+    metaphrast.translate_selection(bufnr, "\22", { replace = false, target_lang = "es" })
+
+    assert.same(before, snapshot())
+  end)
+
+  it("AC-E7: rejects a stale stored selection whose end mark is inside the row", function()
+    local captured = capturing_provider("block_dollar_stale", function()
+      return "uno dos"
+    end)
+    local end_line = "  // x  TAIL"
+    local bufnr = visual_block_buffer(
+      { dollar_lines[1], end_line, dollar_lines[3] },
+      "// %s",
+      { 1, 2 },
+      "<C-v>1j$<Esc>"
+    )
+    vim.api.nvim_buf_set_mark(bufnr, "<", 1, 2, {})
+    vim.api.nvim_buf_set_mark(bufnr, ">", 2, 5, {})
+    -- The stored selection is still the real `$` block, so every guard above the
+    -- end-mark test passes: `gv` restores blockwise over the same rows with a
+    -- stale `curswant`. Only the raw end column separates this from a real `$`.
+    vim.cmd("normal! gv")
+    assert.equals("\22", vim.fn.mode())
+    assert.equals(vim.v.maxcol, vim.fn.winsaveview().curswant)
+    vim.cmd("normal! \27")
+    assert.is_true(5 < #end_line)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = false, target_lang = "es" })
+
+    assert.equals("a x", captured())
   end)
 end)
 

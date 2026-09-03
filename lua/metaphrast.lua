@@ -325,8 +325,9 @@ end
 ---@param er integer 0-based last row.
 ---@param ec integer|nil
 ---@param lines string[] The translated input lines.
+---@param to_eol boolean|nil True when a blockwise block runs to every row's own end.
 ---@return MetaphrastHoverSource source
-local function capture_source(buffer, mode, sr, sc, er, ec, lines)
+local function capture_source(buffer, mode, sr, sc, er, ec, lines, to_eol)
   return {
     buf = buffer,
     win = window_for(buffer),
@@ -335,6 +336,7 @@ local function capture_source(buffer, mode, sr, sc, er, ec, lines)
     sc = sc,
     er = er,
     ec = ec,
+    to_eol = to_eol,
     commentstring = vim.bo[buffer] and vim.bo[buffer].commentstring or nil,
     lines = lines,
   }
@@ -355,6 +357,75 @@ local function present(source, result, show_opts)
   return ui.show(source, result, show_opts)
 end
 
+---Whether a blockwise selection was extended to every row's own end with `$`.
+---
+---The `'<`/`'>` marks cannot answer this on their own: a fixed-width block wider
+---than its end row clamps `'>` to that row's length exactly as `$` does, and
+---`curswant` — the one value that separates them — is not carried by the marks
+---and has already been reset by the time a `-range` command body runs. So the
+---selection is re-entered with `gv` and `winsaveview().curswant` is read, behind
+---a guard chain that falls back to the plain clamp (`false`) whenever any link
+---fails: the caller's mode is blockwise, the target buffer is current, the
+---editor is in normal mode, `gv` succeeds and restores blockwise, the restored
+---region spans the same rows, `curswant` is `v:maxcol`, and the raw end-mark
+---column reaches the end row's length.
+---
+---`ec` must be the *raw* `'>` column, read before this runs: `gv` normalises an
+---out-of-range end mark to the row end, exactly as Vim's own `check_cursor()`
+---does, so a value read afterwards would no longer be the caller's.
+---
+---Side effects are two `ModeChanged` events (`n:\22` then `\22:n`) per blockwise
+---resolution and nothing else — no `CursorMoved`, `WinScrolled` or
+---`TextChanged` — so an open hover, which listens on `CursorMoved`,
+---`CursorMovedI`, `BufLeave`, `InsertEnter` and `BufWinLeave`, cannot be closed
+---by the probe. The mode guard keeps those two events off the charwise and
+---linewise paths entirely. The probe is skipped, and the plain clamp used, when
+---the target buffer is not current or the editor is not exactly in normal mode;
+---the latter includes a `<Cmd>` mapping invoked straight from visual mode.
+---
+---Residual (risk R11): a caller that sets `'<`/`'>` programmatically with a raw
+---end column at or past the end row's byte length, in a buffer whose last real
+---visual selection was a `$` block, still resolves `true` here — `gv` reports
+---blockwise with a stale `curswant` and the last guard cannot separate it from a
+---genuine `$`. Its failure mode is a silent wrong write, not a refusal: every
+---row longer than the end row loses its tail. No interactive path reaches it,
+---because a real `<Esc>` refreshes the marks and the stored selection together,
+---and a row cross-check does not help — `gv` restores the region from the marks,
+---so the rows always agree.
+---@param bufnr integer
+---@param mode string Visual mode the caller resolved.
+---@param sr integer 0-indexed first row.
+---@param er integer 0-indexed last row.
+---@param ec integer 0-indexed raw `'>` column, before any clamping.
+---@param end_line string Text of the end row.
+---@return boolean to_eol
+local function block_is_to_eol(bufnr, mode, sr, er, ec, end_line)
+  if mode ~= "\22" and mode ~= "" then
+    return false
+  end
+  if vim.api.nvim_get_current_buf() ~= bufnr then
+    return false
+  end
+  if vim.fn.mode() ~= "n" then
+    return false
+  end
+  local view = vim.fn.winsaveview()
+  local to_eol = false
+  if pcall(vim.cmd, "normal! gv") and vim.fn.mode() == "\22" then
+    -- The row cross-check is defensive only: `gv` restores the region from the
+    -- marks, so today the rows always agree. It costs nothing and would catch a
+    -- future `gv` that restored the region from the stored selection instead.
+    local anchor, cursor = vim.fn.line("v"), vim.fn.line(".")
+    local rows_match = math.min(anchor, cursor) - 1 == sr and math.max(anchor, cursor) - 1 == er
+    to_eol = rows_match and vim.fn.winsaveview().curswant == vim.v.maxcol and ec >= #end_line
+  end
+  if vim.fn.mode() ~= "n" then
+    vim.cmd("normal! \27")
+  end
+  vim.fn.winrestview(view)
+  return to_eol
+end
+
 ---Get visual selection positions from marks.
 ---@param bufnr integer
 ---@param mode string Visual mode character: "v", "V", or "\22" (blockwise).
@@ -362,6 +433,7 @@ end
 ---@return integer start_col 0-indexed
 ---@return integer end_row 0-indexed
 ---@return integer end_col 0-indexed (exclusive)
+---@return boolean to_eol True when a blockwise block was `$`-extended to every row's own end.
 local function get_visual_positions(bufnr, mode)
   local start_pos = vim.api.nvim_buf_get_mark(bufnr, "<")
   local end_pos = vim.api.nvim_buf_get_mark(bufnr, ">")
@@ -369,6 +441,7 @@ local function get_visual_positions(bufnr, mode)
   local sc = start_pos[2]
   local er = end_pos[1] - 1
   local ec = end_pos[2]
+  local to_eol = false
 
   if mode == "V" then
     sc = 0
@@ -380,6 +453,9 @@ local function get_visual_positions(bufnr, mode)
     -- the start and end rows would move the block's edges on all the others.
     -- End col from the mark is inclusive; make it exclusive and leave it raw.
     local end_line_text = vim.api.nvim_buf_get_lines(bufnr, er, er + 1, false)[1] or ""
+    -- Probed with the marks as read above and before `ec` is clamped, because
+    -- `gv` normalises an out-of-range end mark to the row end.
+    to_eol = block_is_to_eol(bufnr, mode, sr, er, ec, end_line_text)
     if ec >= #end_line_text then
       ec = #end_line_text
     else
@@ -404,7 +480,7 @@ local function get_visual_positions(bufnr, mode)
     end
   end
 
-  return sr, sc, er, ec
+  return sr, sc, er, ec, to_eol
 end
 
 ---Resolve a blockwise selection's columns against one row.
@@ -419,14 +495,20 @@ end
 ---would pull a codepoint back into the region and delete it from the row. A row
 ---with content has both ends widened, so a block over multibyte text never
 ---sends a split UTF-8 sequence to the provider nor writes one back.
+---
+---A `$`-extended block has no shared end column at all: every row runs to its
+---own end, which is what `to_eol` asks for. It replaces the clamp on `ec` and
+---nothing else — the emptiness test and both codepoint snaps still run, so a row
+---the start column already clamps to nothing stays empty.
 ---@param line string
 ---@param sc integer 0-indexed start col.
 ---@param ec integer 0-indexed end col (exclusive).
+---@param to_eol boolean|nil When true the block runs to this row's own end (`$`).
 ---@return integer cstart 0-indexed byte offset where the block starts.
 ---@return integer cend 0-indexed byte offset just past the block's last byte.
-local function block_columns(line, sc, ec)
+local function block_columns(line, sc, ec, to_eol)
   local cstart = math.min(sc, #line)
-  local cend = math.min(ec, #line)
+  local cend = to_eol and #line or math.min(ec, #line)
   -- Whether the row clamped to nothing is decided before either end moves:
   -- widening `cstart` back and `cend` forward pulls a whole codepoint into a
   -- region the clamp had just emptied, deleting it from the row.
@@ -452,8 +534,9 @@ end
 ---@param sc integer 0-indexed start col.
 ---@param er integer 0-indexed end row.
 ---@param ec integer 0-indexed end col (exclusive).
+---@param to_eol boolean|nil True when a blockwise block runs to every row's own end.
 ---@return string[] selected_lines
-local function extract_selection_lines(bufnr, mode, sr, sc, er, ec)
+local function extract_selection_lines(bufnr, mode, sr, sc, er, ec, to_eol)
   local lines = vim.api.nvim_buf_get_lines(bufnr, sr, er + 1, false)
   if #lines == 0 then
     return {}
@@ -467,7 +550,7 @@ local function extract_selection_lines(bufnr, mode, sr, sc, er, ec)
   if block then
     local parts = {}
     for _, line in ipairs(lines) do
-      local cstart, cend = block_columns(line, sc, ec)
+      local cstart, cend = block_columns(line, sc, ec, to_eol)
       table.insert(parts, line:sub(cstart + 1, cend))
     end
     return parts
@@ -502,7 +585,8 @@ end
 ---@param er integer 0-indexed end row.
 ---@param ec integer 0-indexed end col (exclusive).
 ---@param replacement string
-local function replace_selection_text(bufnr, mode, sr, sc, er, ec, replacement)
+---@param to_eol boolean|nil True when a blockwise block runs to every row's own end.
+local function replace_selection_text(bufnr, mode, sr, sc, er, ec, replacement, to_eol)
   local rep_lines = util.split_lines(replacement)
 
   if mode == "V" then
@@ -517,12 +601,12 @@ local function replace_selection_text(bufnr, mode, sr, sc, er, ec, replacement)
     -- Captured before the loop rewrites it, so the pad reflects the source row.
     local last_line = buf_lines[rows] or ""
     for i, line in ipairs(buf_lines) do
-      local cstart, cend = block_columns(line, sc, ec)
+      local cstart, cend = block_columns(line, sc, ec, to_eol)
       local rep = rep_lines[i] or ""
       buf_lines[i] = line:sub(1, cstart) .. rep .. line:sub(cend + 1)
     end
     if #rep_lines > rows then
-      local cstart = block_columns(last_line, sc, ec)
+      local cstart = block_columns(last_line, sc, ec, to_eol)
       local left = last_line:sub(1, cstart)
       local pad = left
       if left:match("%S") then
@@ -569,7 +653,7 @@ local function try_apply(source, translated)
   end
   local current
   if is_partial_selection(source) then
-    current = extract_selection_lines(buffer, source.mode, source.sr, source.sc, source.er, source.ec)
+    current = extract_selection_lines(buffer, source.mode, source.sr, source.sc, source.er, source.ec, source.to_eol)
   else
     current = vim.api.nvim_buf_get_lines(buffer, source.sr, source.er + 1, false)
   end
@@ -601,7 +685,7 @@ local function try_apply(source, translated)
       )
   end
   if is_partial_selection(source) then
-    replace_selection_text(buffer, source.mode, source.sr, source.sc, source.er, source.ec, rendered)
+    replace_selection_text(buffer, source.mode, source.sr, source.sc, source.er, source.ec, rendered, source.to_eol)
   else
     vim.api.nvim_buf_set_lines(buffer, source.sr, source.er + 1, false, flat_lines)
   end
@@ -699,9 +783,9 @@ local NOTHING_TO_TRANSLATE = "metaphrast: nothing to translate in the selection"
 ---@return string|nil reason Why nothing was written.
 function M.translate_selection(bufnr, mode, opts)
   local buffer = resolve_buffer(bufnr)
-  local sr, sc, er, ec = get_visual_positions(buffer, mode)
-  local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec)
-  local source = capture_source(buffer, mode, sr, sc, er, ec, selected_lines)
+  local sr, sc, er, ec, to_eol = get_visual_positions(buffer, mode)
+  local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec, to_eol)
+  local source = capture_source(buffer, mode, sr, sc, er, ec, selected_lines, to_eol)
   local analysis = analyze_lines(selected_lines, source.commentstring)
   -- A block clamped to nothing on every row leaves only newlines, which is not
   -- `""`; sending it would bill a provider for nothing and write the reply
@@ -724,9 +808,9 @@ end
 ---@param callbacks {on_success?:fun(result:string, meta:table, applied?:boolean, reason?:string), on_error?:fun(err:any)}|nil
 function M.translate_selection_async(bufnr, mode, opts, callbacks)
   local buffer = resolve_buffer(bufnr)
-  local sr, sc, er, ec = get_visual_positions(buffer, mode)
-  local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec)
-  local source = capture_source(buffer, mode, sr, sc, er, ec, selected_lines)
+  local sr, sc, er, ec, to_eol = get_visual_positions(buffer, mode)
+  local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec, to_eol)
+  local source = capture_source(buffer, mode, sr, sc, er, ec, selected_lines, to_eol)
   local analysis = analyze_lines(selected_lines, source.commentstring)
   local cb = callbacks or {}
   if analysis.text:match("^%s*$") then
