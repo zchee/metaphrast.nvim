@@ -9,6 +9,36 @@ local function die(msg)
   os.exit(1)
 end
 
+---Build a `git` argv for `dir` that the checkout's own config cannot subvert.
+---
+---Whoever can write the worktree can write its `.git` too, and every knob this
+---clears is one that directory would otherwise aim at the check itself:
+---`core.fsmonitor` makes `git status` run an arbitrary program, `core.hooksPath`
+---aims the hooks at one, `status.showUntrackedFiles=no` and `core.excludesFile`
+---each hide an added module, and `core.attributesFile` can rewrite what git
+---compares. `-c` on the command line beats repo config, and there is no repo
+---config for it to read before it applies.
+---@param dir string
+---@param args string[] Subcommand and its arguments.
+---@return string[]
+local function trusted_git(dir, args)
+  return vim.list_extend({
+    "git",
+    "-c",
+    "core.fsmonitor=",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.excludesFile=/dev/null",
+    "-c",
+    "core.attributesFile=/dev/null",
+    "-c",
+    "status.showUntrackedFiles=all",
+    "-C",
+    dir,
+  }, args)
+end
+
 ---Abort when a dependency checkout has anything the pinned commit does not.
 ---
 ---Verifying HEAD is not enough to know which sources load. `git checkout` onto
@@ -17,10 +47,21 @@ end
 ---directories from a cache keyed only by the ref -- content, not a verified
 ---tree. Untracked files count: they cannot shadow a tracked module, but they
 ---can add one.
+---
+---The check runs through `trusted_git` because the directory it audits also
+---configures it: without the overrides, four of the five ways to hide a file
+---here are a one-line write to `.git/`, and a fifth runs code. `.git/info/exclude`
+---survives all of them, so `--ignored=matching` reports what an exclude list hid,
+---and `--really-refresh` re-stats entries flagged `assume-unchanged` instead of
+---trusting the index over the working tree.
 ---@param dir string
 ---@param var string Environment variable that points at the checkout.
 local function die_if_dirty(dir, var)
-  local dirty = vim.fn.system({ "git", "-C", dir, "status", "--porcelain" })
+  -- Exits non-zero when an entry needs updating, which is the normal answer for
+  -- a modified file; the status below is what decides, so ignore it here.
+  vim.fn.system(trusted_git(dir, { "update-index", "--really-refresh", "-q" }))
+  local args = { "status", "--porcelain", "--untracked-files=all", "--ignored=matching" }
+  local dirty = vim.fn.system(trusted_git(dir, args))
   if vim.v.shell_error ~= 0 then
     die(string.format("tests: %s (%s) could not be checked for local modifications", dir, var))
   end
@@ -44,18 +85,18 @@ end
 ---Whether the plenary checkout sits at `plenary_ref` (a commit, tag or branch).
 ---@return boolean
 local function plenary_at_ref()
-  local head = vim.trim(vim.fn.system({ "git", "-C", plenary_dir, "rev-parse", "--verify", "HEAD" }))
+  local head = vim.trim(vim.fn.system(trusted_git(plenary_dir, { "rev-parse", "--verify", "HEAD" })))
   local want =
-    vim.trim(vim.fn.system({ "git", "-C", plenary_dir, "rev-parse", "--verify", plenary_ref .. "^{commit}" }))
+    vim.trim(vim.fn.system(trusted_git(plenary_dir, { "rev-parse", "--verify", plenary_ref .. "^{commit}" })))
   return vim.v.shell_error == 0 and head == want
 end
 
 -- A pre-existing clone may predate the pinned ref or sit on another one; a
 -- silent checkout failure would run the suite against the wrong plenary.
-vim.fn.system({ "git", "-C", plenary_dir, "checkout", "--quiet", plenary_ref })
+vim.fn.system(trusted_git(plenary_dir, { "checkout", "--quiet", plenary_ref }))
 if not plenary_at_ref() then
-  vim.fn.system({ "git", "-C", plenary_dir, "fetch", "--quiet", "origin" })
-  vim.fn.system({ "git", "-C", plenary_dir, "checkout", "--quiet", plenary_ref })
+  vim.fn.system(trusted_git(plenary_dir, { "fetch", "--quiet", "origin" }))
+  vim.fn.system(trusted_git(plenary_dir, { "checkout", "--quiet", plenary_ref }))
   if not plenary_at_ref() then
     die(string.format("tests: %s is not at PLENARY_REF %s after fetch and checkout", plenary_dir, plenary_ref))
   end
@@ -73,17 +114,17 @@ end
 ---Whether the snacks checkout sits at `snacks_ref` (a commit, tag or branch).
 ---@return boolean
 local function snacks_at_ref()
-  local head = vim.trim(vim.fn.system({ "git", "-C", snacks_dir, "rev-parse", "--verify", "HEAD" }))
-  local want = vim.trim(vim.fn.system({ "git", "-C", snacks_dir, "rev-parse", "--verify", snacks_ref .. "^{commit}" }))
+  local head = vim.trim(vim.fn.system(trusted_git(snacks_dir, { "rev-parse", "--verify", "HEAD" })))
+  local want = vim.trim(vim.fn.system(trusted_git(snacks_dir, { "rev-parse", "--verify", snacks_ref .. "^{commit}" })))
   return vim.v.shell_error == 0 and head == want
 end
 
 -- A pre-existing clone may predate the pinned ref or sit on another one; a
 -- silent checkout failure would run the suite against the wrong snacks.
-vim.fn.system({ "git", "-C", snacks_dir, "checkout", "--quiet", snacks_ref })
+vim.fn.system(trusted_git(snacks_dir, { "checkout", "--quiet", snacks_ref }))
 if not snacks_at_ref() then
-  vim.fn.system({ "git", "-C", snacks_dir, "fetch", "--quiet", "origin" })
-  vim.fn.system({ "git", "-C", snacks_dir, "checkout", "--quiet", snacks_ref })
+  vim.fn.system(trusted_git(snacks_dir, { "fetch", "--quiet", "origin" }))
+  vim.fn.system(trusted_git(snacks_dir, { "checkout", "--quiet", snacks_ref }))
   if not snacks_at_ref() then
     die(string.format("tests: %s is not at SNACKS_REF %s after fetch and checkout", snacks_dir, snacks_ref))
   end
