@@ -151,7 +151,9 @@ The `location` must be one the Translation LLM supports — `us-central1` or
 `global` — and the request's parent location must match the location inside
 that model resource. Metaphrast builds both from `providers.google_llm.location`
 so they cannot drift; a mismatch is rejected by the API as HTTP 400
-INVALID_ARGUMENT. The `translate-eu` and `translate-us` multi-regional
+INVALID_ARGUMENT. The value must also look like a location id — letters, digits
+and `-` — because it becomes part of the request URL; anything else is refused
+before the request is built. The `translate-eu` and `translate-us` multi-regional
 endpoints serve the NMT model only, so they cannot be used for the Translation
 LLM.
 

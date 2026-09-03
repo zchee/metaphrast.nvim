@@ -800,6 +800,75 @@ describe("google_llm provider", function()
     assert.equals("projects/proj/locations/global/models/general/translation-llm", body.model)
   end)
 
+  it("rejects a location that is unsafe in the request URL", function()
+    write_adc("quota-project")
+
+    -- `location` is the third interpolant of the same v3 URL the project id
+    -- feeds, and it was left unchecked when the id was hardened. curl
+    -- normalises `..` before sending, so a `/` re-targets the path of an
+    -- ADC-Bearer-authenticated request; `?` and `#` truncate it; CR/LF is
+    -- rejected by curl only after the value has already been built in.
+    for _, value in ipairs({
+      "proj/../other",
+      "us-central1?x=1",
+      "us#1",
+      "us\r\nX-Injected: yes",
+    }) do
+      google_llm._reset_for_tests()
+      local calls = {}
+      local payload = make_payload("hello", "google_llm", {
+        adc_path = adc_path,
+        gcp_project_id = "proj",
+        location = value,
+      })
+
+      local ok, err = pcall(google_llm.translate, adc_http(calls, v3_ok), payload)
+
+      assert.is_false(ok, value)
+      err = tostring(err)
+      assert.truthy(err:find("google_llm provider", 1, true), err)
+      assert.truthy(err:find("location", 1, true), err)
+      -- Refused before anything is spent: not even the token refresh runs.
+      assert.equals(0, #calls, value)
+    end
+  end)
+
+  it("reports an unsafe location instead of raising out of validate", function()
+    write_adc("quota-project")
+
+    -- Same contract as the project id: setup()'s fall-back to echo has to stay
+    -- a warning, not a traceback.
+    local ok, err = google_llm.validate({ adc_path = adc_path, location = "us-central1/../v2" })
+
+    assert.is_false(ok)
+    err = tostring(err)
+    assert.truthy(err:find("google_llm provider", 1, true), err)
+    assert.truthy(err:find("location", 1, true), err)
+  end)
+
+  it("accepts the location ids Cloud Translation actually serves", function()
+    write_adc("quota-project")
+
+    -- `global` and the regional shape both have to survive the check.
+    for _, value in ipairs({ "global", "europe-west1" }) do
+      google_llm._reset_for_tests()
+      local calls = {}
+      local payload = make_payload("hello", "google_llm", {
+        adc_path = adc_path,
+        gcp_project_id = "proj",
+        location = value,
+      })
+
+      assert.equals("hola", google_llm.translate(adc_http(calls, v3_ok), payload))
+      assert.equals(
+        "https://translation.googleapis.com/v3/projects/proj/locations/" .. value .. ":translateText",
+        calls[2].url
+      )
+      local body = vim.json.decode(calls[2].opts.data)
+      assert.equals("projects/proj/locations/" .. value .. "/models/general/translation-llm", body.model)
+    end
+  end)
+
   it("translates through Basic v2 with an api_key", function()
     local captured_url, captured_opts
     local mock_http = function(_, url, opts)

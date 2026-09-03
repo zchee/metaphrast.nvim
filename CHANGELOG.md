@@ -79,6 +79,13 @@ is `v1.0.0`.
   re-targeted the request rather than named a project. Such a value is now
   refused with the source named; legacy domain-scoped ids
   (`example.com:project`) stay valid.
+- `providers.google_llm.location` is now checked the same way. It is another
+  segment of the same v3 URL the project id feeds, so a value containing `/`,
+  `?`, `#` or CR/LF would have re-targeted the request rather than named a
+  region — and `/../` is not cosmetic, because curl normalises it before
+  sending. Only letters, digits and `-` are accepted (`us-central1`, `global`,
+  `europe-west1`); anything else is refused before the request is built, and
+  `setup()` warns and falls back to `echo` instead of raising.
 - `setup()` no longer resets the provider registry, so a provider registered
   through `register_provider()` survives it. A user registration wins over the
   built-in of the same name in either order, and `setup()` names any built-in
