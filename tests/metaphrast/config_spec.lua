@@ -157,6 +157,20 @@ describe("config.defaults", function()
     assert.equals(10.0, d.providers.google_llm.output_per_million)
   end)
 
+  it("reads the google project id from the gcloud environment", function()
+    -- The hook in this describe is an `after_each`, so the "neither set" leg
+    -- would otherwise inherit whatever the developer's shell exports.
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
+    assert.is_nil(config.defaults().providers.google.gcp_project_id)
+
+    vim.env.GCLOUD_PROJECT = "gcloud-project"
+    assert.equals("gcloud-project", config.defaults().providers.google.gcp_project_id)
+
+    vim.env.GOOGLE_CLOUD_PROJECT = "env-project"
+    assert.equals("env-project", config.defaults().providers.google.gcp_project_id)
+  end)
+
   it("reads the google_llm project id from the gcloud environment", function()
     vim.env.GOOGLE_CLOUD_PROJECT = "env-project"
 

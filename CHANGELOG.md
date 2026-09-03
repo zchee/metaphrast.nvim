@@ -65,6 +65,12 @@ is `v1.0.0`.
 - A provider that fails validation now raises instead of silently rewriting the
   configured provider to `echo`. `setup()` keeps its own warn-and-fall-back to
   `echo` for the initial configuration.
+- `providers.google.gcp_project_id` now defaults to `GOOGLE_CLOUD_PROJECT` or
+  `GCLOUD_PROJECT`, as `google_llm` already did. **If you export either
+  variable, the `google` backend now sends `x-goog-user-project` with it, so
+  the project billed and charged for quota may change.** An explicit
+  `providers.google.gcp_project_id` still wins, and setting it to the empty
+  string still falls back to the ADC file's `quota_project_id`.
 - `setup()` no longer resets the provider registry, so a provider registered
   through `register_provider()` survives it. A user registration wins over the
   built-in of the same name in either order, and `setup()` names any built-in

@@ -72,10 +72,17 @@ describe("google provider", function()
   before_each(function()
     google._reset_for_tests()
     adc_path = vim.fn.tempname()
+    -- `gcp_project_id` now defaults to the gcloud environment, so a developer
+    -- with either variable exported would see the ADC fixtures below resolve a
+    -- different project than they assert.
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
   end)
 
   after_each(function()
     google._reset_for_tests()
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
     if adc_path and vim.uv.fs_stat(adc_path) then
       vim.fn.delete(adc_path)
     end
@@ -260,6 +267,95 @@ describe("google provider", function()
 
     assert.equals("translated-with-project-override", result)
     assert.equals("x-goog-user-project: explicit-project", calls[2].opts.headers[3])
+  end)
+
+  ---Write an authorized_user ADC file carrying `quota_project_id`.
+  ---@param quota_project string
+  local function write_google_adc(quota_project)
+    vim.fn.writefile({
+      vim.json.encode({
+        type = "authorized_user",
+        client_id = "cid",
+        client_secret = "secret",
+        refresh_token = "refresh",
+        quota_project_id = quota_project,
+      }),
+    }, adc_path)
+  end
+
+  ---An `_http` stub that answers the token refresh and then the translation.
+  ---@param calls table[] Collector for every request.
+  ---@return fun(method: string, url: string, opts: table): table
+  local function google_adc_http(calls)
+    return function(method, url, opts)
+      table.insert(calls, { method = method, url = url, opts = opts })
+      if url == "https://oauth2.googleapis.com/token" then
+        return {
+          code = 0,
+          stdout = vim.json.encode({ access_token = "adc-access-token", expires_in = 3600 }),
+        }
+      end
+      return {
+        code = 0,
+        stdout = vim.json.encode({ data = { translations = { { translatedText = "translated" } } } }),
+      }
+    end
+  end
+
+  it("AC-H2: bills the project named by GOOGLE_CLOUD_PROJECT", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "env-project"
+
+    local calls = {}
+    local payload = make_payload("hello", "google", { adc_path = adc_path, base_url = "https://example.com" })
+    google.translate(google_adc_http(calls), payload)
+
+    -- Behaviour change: a user with the variable exported now attributes
+    -- google's quota and billing to it, where google_llm already did.
+    assert.equals("x-goog-user-project: env-project", calls[2].opts.headers[3])
+  end)
+
+  it("AC-H2: falls back to GCLOUD_PROJECT when GOOGLE_CLOUD_PROJECT is unset", function()
+    write_google_adc("quota-project")
+    vim.env.GCLOUD_PROJECT = "gcloud-project"
+
+    local calls = {}
+    local payload = make_payload("hello", "google", { adc_path = adc_path, base_url = "https://example.com" })
+    google.translate(google_adc_http(calls), payload)
+
+    assert.equals("x-goog-user-project: gcloud-project", calls[2].opts.headers[3])
+  end)
+
+  it("AC-H2: prefers an explicit gcp_project_id over the environment", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "env-project"
+
+    local calls = {}
+    local payload = make_payload("hello", "google", {
+      adc_path = adc_path,
+      gcp_project_id = "explicit-project",
+      base_url = "https://example.com",
+    })
+    google.translate(google_adc_http(calls), payload)
+
+    assert.equals("x-goog-user-project: explicit-project", calls[2].opts.headers[3])
+  end)
+
+  it("AC-H2: falls back to the ADC quota project when gcp_project_id is empty", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "env-project"
+
+    local calls = {}
+    local payload = make_payload("hello", "google", {
+      adc_path = adc_path,
+      gcp_project_id = "",
+      base_url = "https://example.com",
+    })
+    google.translate(google_adc_http(calls), payload)
+
+    -- An explicit empty string is a deliberate "use the ADC file's project",
+    -- and the environment must not reinstate itself behind it.
+    assert.equals("x-goog-user-project: quota-project", calls[2].opts.headers[3])
   end)
 
   it("surfaces blocked method guidance for HTTP 403 responses", function()
@@ -514,10 +610,14 @@ describe("google_llm provider", function()
   before_each(function()
     google_llm._reset_for_tests()
     adc_path = vim.fn.tempname()
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
   end)
 
   after_each(function()
     google_llm._reset_for_tests()
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
     if adc_path and vim.uv.fs_stat(adc_path) then
       vim.fn.delete(adc_path)
     end
