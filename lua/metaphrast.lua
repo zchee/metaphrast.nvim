@@ -150,8 +150,9 @@ end
 ---Each translated paragraph is re-wrapped to its source column budget (single-
 ---source-line paragraphs are kept on one line), raw passthrough lines are
 ---preserved, and comment leaders are reapplied per output line. On a paragraph
----count mismatch (a provider that reformatted the newlines) the whole
----translation is wrapped as a single block so output is never silently dropped.
+---count mismatch (a provider that reformatted the newlines) every reply
+---paragraph is wrapped in turn at the first paragraph slot, so output is never
+---silently dropped and no line reaches the buffer without its leader.
 ---@param translated string
 ---@param layout table
 ---@param parts MetaphrastCommentParts
@@ -166,8 +167,12 @@ local function assemble_comment_lines(translated, layout, parts)
   if #translated_paras ~= layout.para_count then
     -- A provider reformatted the paragraph newlines so we can no longer map
     -- each paragraph back. Preserve raw passthrough lines in place and emit the
-    -- whole translation as one wrapped block at the first paragraph slot, so no
-    -- content (translation or surrounding code) is ever silently dropped.
+    -- whole translation at the first paragraph slot, so no content (translation
+    -- or surrounding code) is ever silently dropped. Wrap the reply one
+    -- paragraph at a time rather than in one block: `textflow.wrap` treats a
+    -- newline as an ordinary break unit and hands it back inside a line, and
+    -- `try_apply` only discovers it after `comment.reapply` has run, so a
+    -- single-block wrap writes the split-off lines with no leader at all.
     local emitted = false
     for _, seg in ipairs(layout.segments) do
       if seg.kind == "raw" then
@@ -175,9 +180,11 @@ local function assemble_comment_lines(translated, layout, parts)
         out_info[#out_info + 1] = { indent = seg.indent, has_comment = seg.has_comment }
       elseif not emitted then
         emitted = true
-        for _, line in ipairs(textflow.wrap(translated, seg.width)) do
-          content_lines[#content_lines + 1] = line
-          out_info[#out_info + 1] = { indent = seg.indent, has_comment = true }
+        for _, para in ipairs(translated_paras) do
+          for _, line in ipairs(textflow.wrap(para, seg.width)) do
+            content_lines[#content_lines + 1] = line
+            out_info[#out_info + 1] = { indent = seg.indent, has_comment = true }
+          end
         end
       end
     end
@@ -559,25 +566,25 @@ local function try_apply(source, translated)
   -- one, and the blockwise cap below has to count the lines that really land.
   local rendered = table.concat(out_lines, "\n")
   local flat_lines = util.split_lines(rendered)
+  -- Every write path inserts the rendered lines past the source's row count,
+  -- and that count comes from the provider's reply, so bound it here rather
+  -- than inside one selection shape: a runaway reply floods a linewise or
+  -- charwise write exactly as it floods a blockwise one. Refusing beats
+  -- truncating: no content is dropped without saying so.
+  local rendered_rows = #flat_lines
+  local rows = #source.lines
+  local limit = M.config.max_inserted_lines or 200
+  if rendered_rows - rows > limit then
+    return false,
+      string.format(
+        "metaphrast: translation rendered %d lines for %d source lines, over "
+          .. "max_inserted_lines (%d); translation not applied",
+        rendered_rows,
+        rows,
+        limit
+      )
+  end
   if is_partial_selection(source) then
-    if source.mode == "\22" or source.mode == "" then
-      -- A blockwise replacement inserts every rendered line past the block's
-      -- row count, and that count comes from the provider's reply, so bound it.
-      -- Refusing beats truncating: no content is dropped without saying so.
-      local rendered_rows = #flat_lines
-      local rows = #source.lines
-      local limit = M.config.max_inserted_lines or 200
-      if rendered_rows - rows > limit then
-        return false,
-          string.format(
-            "metaphrast: translation rendered %d lines for a %d-row block, over "
-              .. "max_inserted_lines (%d); translation not applied",
-            rendered_rows,
-            rows,
-            limit
-          )
-      end
-    end
     replace_selection_text(buffer, source.mode, source.sr, source.sc, source.er, source.ec, rendered)
   else
     vim.api.nvim_buf_set_lines(buffer, source.sr, source.er + 1, false, flat_lines)

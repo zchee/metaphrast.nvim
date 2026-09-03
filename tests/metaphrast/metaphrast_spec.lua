@@ -989,7 +989,7 @@ describe("blockwise replace", function()
     }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 
-  it("AC12: leaves a blank surplus line empty instead of pad-only whitespace", function()
+  it("AC12: keeps the leader on a blank surplus line instead of emptying it", function()
     capturing_provider("block_blank_surplus", function()
       return "alpha beta gamma delta epsilon\n\nzeta"
     end)
@@ -998,14 +998,14 @@ describe("blockwise replace", function()
     metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    -- A pad-only line is trailing whitespace the user never wrote, and every
-    -- trim-on-save formatter would report it as their diff.
+    -- The paragraph break the provider sent is a blank *comment* line, not a
+    -- hole in the comment block: emitting it bare uncommented the file and cost
+    -- a line, since the reply was flattened into one wrapped block first.
     assert.same({
       "  // alpha beta  TAIL1",
       "  // gamma delta  TAIL2",
       "  // epsilon",
-      "",
-      "",
+      "  // ",
       "  // zeta",
       "x := 1",
     }, lines)
@@ -1079,6 +1079,24 @@ describe("blockwise replace", function()
 
     assert.equals("abcd 日本", captured())
   end)
+
+  it("AC-B2: keeps the leader on a block line the provider split with a newline", function()
+    capturing_provider("block_newline_leader", function()
+      return "uno\ndos"
+    end)
+    local bufnr = block_buffer({ "  // hello there  T1", "  // second line  T2", "x := 1" }, "// %s", 1, 2, 2, 15)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- The reply's newline is discovered after `comment.reapply` has already run,
+    -- so a single wrapped block leaves the split-off row bare: the layout layer
+    -- has to split the reply into paragraphs before the leaders are applied.
+    assert.same({
+      "  // uno  T1",
+      "  // dos  T2",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
 end)
 
 describe("charwise replace", function()
@@ -1101,6 +1119,41 @@ describe("charwise replace", function()
     assert.equals("日本語", captured())
     assert.same({ "abc 日本語 [cap] def" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
+
+  it("AC-B2: keeps the leader on a charwise line the provider split with a newline", function()
+    capturing_provider("charwise_newline_leader", function()
+      return "uno\ndos"
+    end)
+    local bufnr = block_buffer({ "  // hello there", "x := 1" }, "// %s", 1, 2, 1, 15)
+
+    metaphrast.translate_selection(bufnr, "v", { replace = true, target_lang = "es" })
+
+    -- `nvim_buf_set_text` starts the split-off line at column 0, so its indent
+    -- is an asserted known residual; the leader itself is not, and losing it
+    -- uncomments the line.
+    assert.same({
+      "  // uno",
+      "// dos",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC-B5: refuses a charwise reply that would insert more than max_inserted_lines", function()
+    capturing_provider("charwise_flood", function()
+      return string.rep("x\n", 300)
+    end)
+    local original = { "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }
+    local bufnr = block_buffer(original, "// %s", 1, 2, 2, 15)
+
+    local _, applied, reason = metaphrast.translate_selection(bufnr, "v", { replace = true, target_lang = "es" })
+
+    -- The cap belongs to the write, not to one selection shape: a runaway reply
+    -- floods a charwise buffer exactly as it floods a blockwise one.
+    assert.is_false(applied)
+    assert.truthy(reason:find("max_inserted_lines", 1, true), reason)
+    assert.truthy(reason:find("200", 1, true), reason)
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
 end)
 
 describe("linewise replace", function()
@@ -1119,11 +1172,46 @@ describe("linewise replace", function()
 
     -- `nvim_buf_set_lines` rejects an item containing a newline, so handing it
     -- the rendered table raised `'replacement string' item contains newlines`
-    -- and left the caller with a traceback instead of a write. Reapplying the
-    -- leader to the line the provider split off is a separate layout question;
-    -- what this pins is that the write is legal and reports itself.
+    -- and left the caller with a traceback instead of a write. The line the
+    -- provider split off now keeps its leader too: the layout layer splits the
+    -- reply into paragraphs before `comment.reapply` runs.
     assert.is_true(applied)
-    assert.same({ "  // uno", "dos", "x := 1" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    assert.same({ "  // uno", "  // dos", "x := 1" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC-B1: keeps the leader on every line a provider newline split off", function()
+    capturing_provider("linewise_leader_ja", function()
+      return "行1\n行2"
+    end)
+    local bufnr = block_buffer({ "// Foo does a thing.", "func Foo() {}" }, "// %s", 1, 0, 1, 0)
+
+    local _, applied = metaphrast.translate_range(bufnr, 0, 1, { replace = true, target_lang = "ja" })
+
+    assert.is_true(applied)
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    assert.same({ "// 行1", "// 行2", "func Foo() {}" }, lines)
+    -- A bare split-off line is not a layout nicety: it uncomments source, so
+    -- every line the translation produced has to carry the leader.
+    for i = 1, 2 do
+      assert.truthy(lines[i]:match("^%s*// "), string.format("line %d lost its leader: %q", i, lines[i]))
+    end
+  end)
+
+  it("AC-B5: refuses a linewise reply that would insert more than max_inserted_lines", function()
+    capturing_provider("linewise_flood", function()
+      return string.rep("x\n", 300)
+    end)
+    local original = { "  // hello there", "  // second line", "x := 1" }
+    local bufnr = block_buffer(original, "// %s", 1, 0, 2, 0)
+
+    local _, applied, reason = metaphrast.translate_range(bufnr, 0, 1, { replace = true, target_lang = "es" })
+
+    -- The linewise path wrote the flood unbounded, so the cap has to guard the
+    -- write itself rather than the blockwise branch it happened to live in.
+    assert.is_false(applied)
+    assert.truthy(reason:find("max_inserted_lines", 1, true), reason)
+    assert.truthy(reason:find("200", 1, true), reason)
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 end)
 
