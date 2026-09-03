@@ -27,15 +27,69 @@ local M = {
 M.http = http_builder.build(M.config.http)
 M.http_async = http_builder.build_async(M.config.http)
 
+local BUILTIN_PROVIDERS = {
+  provider_echo,
+  provider_google,
+  provider_google_llm,
+  provider_deepl,
+  provider_openai,
+  provider_gemini,
+  provider_openrouter,
+}
+
+---Fill in the built-in providers without disturbing what a user registered.
+---
+---`setup()` used to reset the registry first, which discarded every provider
+---registered through `M.register_provider` -- so whether a user's provider
+---survived depended on whether they registered it before or after `setup()`.
+---A user registration now wins over a built-in of the same name in either
+---order, and the skip report compares tables by identity so a second
+---`setup()` (a lazy-loader reload, a re-sourced config) finds the seven
+---built-ins already present and says nothing about them.
 local function register_builtin()
-  registry.reset()
-  registry.register(provider_echo.name, provider_echo)
-  registry.register(provider_google.name, provider_google)
-  registry.register(provider_google_llm.name, provider_google_llm)
-  registry.register(provider_deepl.name, provider_deepl)
-  registry.register(provider_openai.name, provider_openai)
-  registry.register(provider_gemini.name, provider_gemini)
-  registry.register(provider_openrouter.name, provider_openrouter)
+  local shadowed = {}
+  for _, provider in ipairs(BUILTIN_PROVIDERS) do
+    local existing = registry.get(provider.name)
+    if existing == nil then
+      registry.register(provider.name, provider)
+    elseif existing ~= provider then
+      table.insert(shadowed, provider.name)
+    end
+  end
+  if #shadowed > 0 then
+    ui.notify(
+      string.format("metaphrast: user registration shadows the built-in provider(s): %s", table.concat(shadowed, ", ")),
+      "debug"
+    )
+  end
+end
+
+local DEFAULT_MAX_INSERTED_LINES = 200
+local warned_max_inserted_lines = false
+
+---Resolve the write cap, ignoring a value that is not a number.
+---
+---The cap is compared against a row count, so a string here raised
+---`attempt to compare string with number` and the write failed with a
+---traceback instead of a refusal. The ignored value is reported once.
+---@return integer
+local function resolve_max_inserted_lines()
+  local configured = M.config.max_inserted_lines
+  if type(configured) == "number" then
+    return configured
+  end
+  if configured ~= nil and not warned_max_inserted_lines then
+    warned_max_inserted_lines = true
+    ui.notify(
+      string.format(
+        "metaphrast: max_inserted_lines must be a number, got %s; using %d",
+        vim.inspect(configured),
+        DEFAULT_MAX_INSERTED_LINES
+      ),
+      "warn"
+    )
+  end
+  return DEFAULT_MAX_INSERTED_LINES
 end
 
 local function validate_provider(name, config_table)
@@ -673,7 +727,7 @@ local function try_apply(source, translated)
   -- truncating: no content is dropped without saying so.
   local rendered_rows = #flat_lines
   local rows = #source.lines
-  local limit = M.config.max_inserted_lines or 200
+  local limit = resolve_max_inserted_lines()
   if rendered_rows - rows > limit then
     return false,
       string.format(
@@ -1064,6 +1118,10 @@ M._block_columns = block_columns
 function M._reset_for_tests()
   M.config = cfg.defaults()
   cfg._reset_for_tests()
+  warned_max_inserted_lines = false
+  -- The isolation boundary between specs: `register_builtin` no longer resets,
+  -- so a provider one spec registered would otherwise leak into the next.
+  registry.reset()
   register_builtin()
   M.http = http_builder.build(M.config.http)
   M.http_async = http_builder.build_async(M.config.http)

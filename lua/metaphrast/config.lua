@@ -80,7 +80,7 @@
 ---@field source_lang string|nil
 ---@field replace boolean
 ---@field max_chars integer
----@field max_inserted_lines integer Cap on lines a blockwise replace may add below the block.
+---@field max_inserted_lines integer Cap on lines any replace may add past the source's rows.
 ---@field cache MetaphrastCacheConfig
 ---@field http MetaphrastHttpConfig
 ---@field providers table<string, MetaphrastProviderConfig>

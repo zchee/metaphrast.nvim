@@ -3,8 +3,87 @@ local metaphrast = require("metaphrast")
 local registry = require("metaphrast.providers")
 
 describe("setup", function()
+  local ui = require("metaphrast.ui")
+
   before_each(function()
     metaphrast._reset_for_tests()
+  end)
+
+  ---A minimal provider table, distinguishable by identity.
+  ---@return table
+  local function custom_provider()
+    return {
+      translate = function(_, payload)
+        return payload.text .. "[custom]"
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    }
+  end
+
+  ---Notifier history entries whose message contains `needle`.
+  ---@param needle string
+  ---@return table[]
+  local function entries_matching(needle)
+    return vim.tbl_filter(function(entry)
+      return type(entry.msg) == "string" and entry.msg:find(needle, 1, true) ~= nil
+    end, ui.require_snacks().notifier.get_history())
+  end
+
+  it("AC-F5: keeps a provider registered before setup over the built-in of that name", function()
+    local custom = custom_provider()
+    metaphrast.register_provider("google", custom)
+
+    metaphrast.setup({ provider = "echo" })
+
+    -- setup() reset the whole registry, so a config that registered its
+    -- provider before calling setup() silently lost it.
+    assert.equals(custom, registry.get("google"))
+  end)
+
+  it("AC-F5: keeps a provider registered after setup", function()
+    metaphrast.setup({ provider = "echo" })
+    local custom = custom_provider()
+
+    metaphrast.register_provider("google", custom)
+
+    assert.equals(custom, registry.get("google"))
+  end)
+
+  it("AC-F5: keeps a user provider under a fresh name across setup", function()
+    local mine = custom_provider()
+    metaphrast.register_provider("mine", mine)
+
+    metaphrast.setup({ provider = "echo" })
+
+    assert.equals(mine, registry.get("mine"))
+    assert.is_true(vim.tbl_contains(registry.names(), "mine"))
+  end)
+
+  it("AC-F5: reports the built-in a user registration shadowed", function()
+    local before = #entries_matching("shadow")
+    metaphrast.register_provider("google", custom_provider())
+
+    metaphrast.setup({ provider = "echo" })
+
+    local reported = entries_matching("shadow")
+    assert.equals(before + 1, #reported)
+    assert.equals("debug", reported[#reported].level)
+    assert.truthy(reported[#reported].msg:find("google", 1, true), reported[#reported].msg)
+  end)
+
+  it("AC-F5: says nothing about the built-ins on a second setup", function()
+    metaphrast.setup({ provider = "echo" })
+    local google = registry.get("google")
+    local before = #entries_matching("shadow")
+
+    metaphrast.setup({ provider = "echo" })
+
+    -- The seven built-ins are already present the second time round, so an
+    -- identity-blind skip report would toast every one of them.
+    assert.equals(google, registry.get("google"))
+    assert.equals(before, #entries_matching("shadow"))
   end)
 
   it("falls back to echo when provider credentials are missing", function()
@@ -1430,6 +1509,62 @@ describe("linewise replace", function()
     assert.truthy(reason:find("max_inserted_lines", 1, true), reason)
     assert.truthy(reason:find("200", 1, true), reason)
     assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC-F6: ignores a non-number max_inserted_lines, warns once, and still refuses", function()
+    local ui = require("metaphrast.ui")
+    local function warnings()
+      return vim.tbl_filter(function(entry)
+        return type(entry.msg) == "string" and entry.msg:find("max_inserted_lines must be a number", 1, true) ~= nil
+      end, ui.require_snacks().notifier.get_history())
+    end
+    local original = { "  // hello there", "  // second line", "x := 1" }
+
+    ---Flood the cap with `value` configured, and report what came back.
+    ---@param value any
+    ---@return boolean ok
+    ---@return boolean|nil applied
+    ---@return string|nil reason
+    ---@return integer bufnr
+    local function flood(value)
+      capturing_provider("linewise_flood_" .. tostring(value), function()
+        return string.rep("x\n", 300)
+      end)
+      local bufnr = block_buffer(original, "// %s", 1, 0, 2, 0)
+      metaphrast.config.max_inserted_lines = value
+      local ok, _, applied, reason = pcall(metaphrast.translate_range, bufnr, 0, 1, {
+        replace = true,
+        target_lang = "es",
+      })
+      return ok, applied, reason, bufnr
+    end
+
+    local before = #warnings()
+    -- A string cap raised `attempt to compare string with number` and left the
+    -- caller with a traceback, so the absence of the error is asserted by pcall
+    -- succeeding rather than by matching the old message.
+    local ok, applied, reason, bufnr = flood("200")
+
+    assert.is_true(ok)
+    assert.is_false(applied)
+    assert.truthy(reason:find("max_inserted_lines", 1, true), reason)
+    assert.truthy(reason:find("200", 1, true), reason)
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+
+    local reported = warnings()
+    assert.equals(before + 1, #reported)
+    assert.equals("warn", reported[#reported].level)
+    assert.truthy(reported[#reported].msg:find('"200"', 1, true), reported[#reported].msg)
+
+    -- The value is still wrong on the next write; the toast is not repeated.
+    assert.is_true((flood("200")))
+    assert.equals(before + 1, #warnings())
+
+    -- A reset re-arms the report, so the next session hears about it again.
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+    assert.is_true((flood("200")))
+    assert.equals(before + 2, #warnings())
   end)
 end)
 

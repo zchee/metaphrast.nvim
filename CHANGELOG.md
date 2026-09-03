@@ -65,6 +65,16 @@ is `v1.0.0`.
 - A provider that fails validation now raises instead of silently rewriting the
   configured provider to `echo`. `setup()` keeps its own warn-and-fall-back to
   `echo` for the initial configuration.
+- `setup()` no longer resets the provider registry, so a provider registered
+  through `register_provider()` survives it. A user registration wins over the
+  built-in of the same name in either order, and `setup()` names any built-in
+  it skipped at `debug`. `validate_provider` then validates the user's table,
+  and a provider without a `validate` function is accepted, so the fall-back to
+  `echo` does not fire for it.
+- A `max_inserted_lines` that is not a number is now ignored, with one warning
+  naming the value, and the default of 200 applies. It previously raised
+  `attempt to compare string with number` from the write path, so the caller
+  got a traceback instead of a refusal.
 - Default `ui.win.padding` is now `{ top = 0, bottom = 0, left = 1, right = 1 }`
   (was `{ 0, 0, 0, 0 }`).
 - Default `ui.win.backdrop` is now `false` (was `40`).
