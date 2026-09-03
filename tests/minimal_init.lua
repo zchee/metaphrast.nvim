@@ -9,6 +9,27 @@ local function die(msg)
   os.exit(1)
 end
 
+---Abort when a dependency checkout has anything the pinned commit does not.
+---
+---Verifying HEAD is not enough to know which sources load. `git checkout` onto
+---the commit the tree already has is a no-op that keeps local modifications,
+---the default `/tmp` paths are predictable and shared, and CI restores these
+---directories from a cache keyed only by the ref -- content, not a verified
+---tree. Untracked files count: they cannot shadow a tracked module, but they
+---can add one.
+---@param dir string
+---@param var string Environment variable that points at the checkout.
+local function die_if_dirty(dir, var)
+  local dirty = vim.fn.system({ "git", "-C", dir, "status", "--porcelain" })
+  if vim.v.shell_error ~= 0 then
+    die(string.format("tests: %s (%s) could not be checked for local modifications", dir, var))
+  end
+  dirty = vim.trim(dirty)
+  if dirty ~= "" then
+    die(string.format("tests: %s (%s) is at the pinned commit but not clean:\n%s", dir, var, dirty))
+  end
+end
+
 -- plenary.nvim is the test runner, and upstream announced that the repository
 -- will be archived in Q2 2026, so an unpinned clone is a moving target that can
 -- change under the suite at any time. The pin is also what currently protects
@@ -39,6 +60,7 @@ if not plenary_at_ref() then
     die(string.format("tests: %s is not at PLENARY_REF %s after fetch and checkout", plenary_dir, plenary_ref))
   end
 end
+die_if_dirty(plenary_dir, "PLENARY_DIR")
 
 -- snacks.nvim is a hard dependency; specs run against the real plugin pinned
 -- to the commit the hover was built against (CI caches the clone by this ref).
@@ -66,6 +88,7 @@ if not snacks_at_ref() then
     die(string.format("tests: %s is not at SNACKS_REF %s after fetch and checkout", snacks_dir, snacks_ref))
   end
 end
+die_if_dirty(snacks_dir, "SNACKS_DIR")
 
 vim.opt.rtp:append(".")
 vim.opt.rtp:append(plenary_dir)
