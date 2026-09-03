@@ -5,7 +5,7 @@
 local M = {}
 
 local util = require("metaphrast.util")
-local uv = vim.loop
+local uv = vim.uv
 
 local function build_request_url(url, query)
   if not query then
@@ -21,25 +21,39 @@ local function build_request_url(url, query)
   return url .. "?" .. table.concat(qs, "&")
 end
 
+---Escape a value for the double-quoted form of a curl `--config` document.
+---@param value string
+---@return string
+local function escape_config_value(value)
+  local escaped = value:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\n", "\\n"):gsub("\r", "\\r")
+  return escaped
+end
+
+---Build curl's argv and the config document that carries every credential.
+---
+---The URL (which may hold a `?key=` secret), the headers and the body are
+---written to a document curl reads from stdin, so nothing secret reaches argv
+---where any process on the machine can read it. The body is emitted as
+---`data-raw`: `data` and `data-binary` read a leading `@` as a local filename,
+---which would turn a hostile payload into a file-exfiltration primitive.
 ---@param method string
 ---@param url string
 ---@param opts table|nil
----@return string[]
-local function build_args(method, url, opts)
-  local args = { "-sS", "-X", method, "-w", "\n%{http_code}" }
+---@return string[] args
+---@return string config
+local function build_request(method, url, opts)
+  local args = { "-sS", "-X", method, "-w", "\n%{http_code}", "--config", "-" }
   local request_url = build_request_url(url, opts and opts.query or nil)
+  local lines = { string.format('url = "%s"', escape_config_value(request_url)) }
   if opts and opts.headers then
     for _, h in ipairs(opts.headers) do
-      table.insert(args, "-H")
-      table.insert(args, h)
+      table.insert(lines, string.format('header = "%s"', escape_config_value(h)))
     end
   end
   if opts and opts.data then
-    table.insert(args, "-d")
-    table.insert(args, opts.data)
+    table.insert(lines, string.format('data-raw = "%s"', escape_config_value(opts.data)))
   end
-  table.insert(args, request_url)
-  return args
+  return args, table.concat(lines, "\n") .. "\n"
 end
 
 ---@param raw_stdout string
@@ -53,16 +67,22 @@ local function parse_response(raw_stdout)
 end
 
 ---@param args string[]
+---@param config string
 ---@param timeout integer
 ---@return table|nil
-local function run_with_job(args, timeout)
+local function run_with_job(args, config, timeout)
   local ok, Job = pcall(require, "plenary.job")
   if not ok then
     return nil
   end
+  -- `interactive` is what allocates the stdin pipe the writer needs. It already
+  -- defaults to true; setting it keeps the dependency visible here rather than
+  -- in a pinned third party's default.
   local job = Job:new({
     command = "curl",
     args = args,
+    writer = config,
+    interactive = true,
   })
   local stdout, code = job:sync(timeout or 20000)
   local stderr = job:stderr_result()
@@ -77,31 +97,18 @@ local function run_with_job(args, timeout)
 end
 
 ---@param args string[]
+---@param config string
 ---@param timeout integer
 ---@return table
-local function run_with_system(args, timeout)
-  if vim.system then
-    local handle = vim.system(vim.list_extend({ "curl" }, args), { text = true, timeout = timeout })
-    local result = handle:wait()
-    local raw = result.stdout or ""
-    local body, http_status = parse_response(raw)
-    return {
-      code = result.code,
-      stdout = body,
-      stderr = result.stderr or "",
-      http_status = http_status,
-    }
-  end
-
-  local joined = "curl " .. table.concat(args, " ")
-  local output = vim.fn.systemlist(joined)
-  local code = vim.v.shell_error
-  local raw = table.concat(output, "\n")
+local function run_with_system(args, config, timeout)
+  local handle = vim.system(vim.list_extend({ "curl" }, args), { text = true, timeout = timeout, stdin = config })
+  local result = handle:wait()
+  local raw = result.stdout or ""
   local body, http_status = parse_response(raw)
   return {
-    code = code,
+    code = result.code,
     stdout = body,
-    stderr = "",
+    stderr = result.stderr or "",
     http_status = http_status,
   }
 end
@@ -110,15 +117,15 @@ end
 ---@return fun(method: string, url: string, opts: table): table
 function M.build(cfg)
   return function(method, url, opts)
-    local args = build_args(method, url, opts)
+    local args, config = build_request(method, url, opts)
     if cfg.backend == "plenary" then
-      local res = run_with_job(args, cfg.timeout or 20000)
+      local res = run_with_job(args, config, cfg.timeout or 20000)
       if res then
         return res
       end
       vim.notify("metaphrast: plenary.job unavailable, falling back to curl", vim.log.levels.WARN)
     end
-    return run_with_system(args, cfg.timeout or 20000)
+    return run_with_system(args, config, cfg.timeout or 20000)
   end
 end
 
@@ -137,12 +144,14 @@ function M.build_async(cfg)
   local wrap = async.wrap
 
   return wrap(function(method, url, opts, cb)
-    local args = build_args(method, url, opts)
+    local args, config = build_request(method, url, opts)
     local timer
     local job
     job = Job:new({
       command = "curl",
       args = args,
+      writer = config,
+      interactive = true,
       enable_recording = true,
       on_exit = function(j, code, signal)
         if timer then

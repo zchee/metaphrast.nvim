@@ -47,7 +47,7 @@ The Lua namespace, user commands, highlight groups, cache directory, vimdoc, and
 ## Testing
 
 - Framework is plenary.busted; specs live in `tests/metaphrast/<module>_spec.lua`.
-- No network in tests: use `setup({ provider = "echo" })`, or pass a fake `_http` function to a provider's `translate()`.
+- No network in tests: use `setup({ provider = "echo" })`, or pass a fake `_http` function to a provider's `translate()`. What is forbidden is an external endpoint, not a socket to this process: a loopback `vim.uv` listener driven by a real `curl` is allowed for transport specs, and `curl` is a hard dependency so such a spec has no skip path.
 - Specs run against real snacks, cloned by `tests/minimal_init.lua` at the pinned `$SNACKS_REF`; never assign `package.loaded["snacks"]`. Fake `vim.ui.select` in specs that exercise the provider key — the default implementation blocks headless Neovim.
 - Call `_reset_for_tests()` on `metaphrast`, `metaphrast.ui`, and `metaphrast.providers.google` in `before_each` as needed.
 - Keep `cache.ttl <= 5` in cache tests so entries stay memory-only and never write to disk.
