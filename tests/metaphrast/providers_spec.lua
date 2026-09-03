@@ -72,10 +72,17 @@ describe("google provider", function()
   before_each(function()
     google._reset_for_tests()
     adc_path = vim.fn.tempname()
+    -- `gcp_project_id` now defaults to the gcloud environment, so a developer
+    -- with either variable exported would see the ADC fixtures below resolve a
+    -- different project than they assert.
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
   end)
 
   after_each(function()
     google._reset_for_tests()
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
     if adc_path and vim.uv.fs_stat(adc_path) then
       vim.fn.delete(adc_path)
     end
@@ -260,6 +267,184 @@ describe("google provider", function()
 
     assert.equals("translated-with-project-override", result)
     assert.equals("x-goog-user-project: explicit-project", calls[2].opts.headers[3])
+  end)
+
+  ---Write an authorized_user ADC file carrying `quota_project_id`.
+  ---@param quota_project string
+  local function write_google_adc(quota_project)
+    vim.fn.writefile({
+      vim.json.encode({
+        type = "authorized_user",
+        client_id = "cid",
+        client_secret = "secret",
+        refresh_token = "refresh",
+        quota_project_id = quota_project,
+      }),
+    }, adc_path)
+  end
+
+  ---An `_http` stub that answers the token refresh and then the translation.
+  ---@param calls table[] Collector for every request.
+  ---@return fun(method: string, url: string, opts: table): table
+  local function google_adc_http(calls)
+    return function(method, url, opts)
+      table.insert(calls, { method = method, url = url, opts = opts })
+      if url == "https://oauth2.googleapis.com/token" then
+        return {
+          code = 0,
+          stdout = vim.json.encode({ access_token = "adc-access-token", expires_in = 3600 }),
+        }
+      end
+      return {
+        code = 0,
+        stdout = vim.json.encode({ data = { translations = { { translatedText = "translated" } } } }),
+      }
+    end
+  end
+
+  it("AC-H2: bills the project named by GOOGLE_CLOUD_PROJECT", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "env-project"
+
+    local calls = {}
+    local payload = make_payload("hello", "google", { adc_path = adc_path, base_url = "https://example.com" })
+    google.translate(google_adc_http(calls), payload)
+
+    -- Behaviour change: a user with the variable exported now attributes
+    -- google's quota and billing to it, where google_llm already did.
+    assert.equals("x-goog-user-project: env-project", calls[2].opts.headers[3])
+  end)
+
+  it("AC-H2: falls back to GCLOUD_PROJECT when GOOGLE_CLOUD_PROJECT is unset", function()
+    write_google_adc("quota-project")
+    vim.env.GCLOUD_PROJECT = "gcloud-project"
+
+    local calls = {}
+    local payload = make_payload("hello", "google", { adc_path = adc_path, base_url = "https://example.com" })
+    google.translate(google_adc_http(calls), payload)
+
+    assert.equals("x-goog-user-project: gcloud-project", calls[2].opts.headers[3])
+  end)
+
+  it("AC-H2: prefers an explicit gcp_project_id over the environment", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "env-project"
+
+    local calls = {}
+    local payload = make_payload("hello", "google", {
+      adc_path = adc_path,
+      gcp_project_id = "explicit-project",
+      base_url = "https://example.com",
+    })
+    google.translate(google_adc_http(calls), payload)
+
+    assert.equals("x-goog-user-project: explicit-project", calls[2].opts.headers[3])
+  end)
+
+  it("AC-H2: falls back to the ADC quota project when gcp_project_id is empty", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "env-project"
+
+    local calls = {}
+    local payload = make_payload("hello", "google", {
+      adc_path = adc_path,
+      gcp_project_id = "",
+      base_url = "https://example.com",
+    })
+    google.translate(google_adc_http(calls), payload)
+
+    -- An explicit empty string is a deliberate "use the ADC file's project",
+    -- and the environment must not reinstate itself behind it.
+    assert.equals("x-goog-user-project: quota-project", calls[2].opts.headers[3])
+  end)
+
+  ---Translate with `overrides` merged over the ADC fixture's provider config.
+  ---@param overrides table
+  ---@return boolean ok
+  ---@return string result Translation, or the raised message.
+  ---@return table[] calls
+  local function translate_with(overrides)
+    local calls = {}
+    local cfg = vim.tbl_extend("force", { adc_path = adc_path, base_url = "https://example.com" }, overrides)
+    local ok, result = pcall(google.translate, google_adc_http(calls), make_payload("hello", "google", cfg))
+    return ok, tostring(result), calls
+  end
+
+  it("rejects a project id that is unsafe in a URL or a header", function()
+    write_google_adc("quota-project")
+
+    -- The value goes into `x-goog-user-project` unencoded, and into a URL path
+    -- segment for google_llm. A CR/LF splits the header (curl's config parser
+    -- unescapes it back), and `/`, `?` or `#` re-target the request -- on a
+    -- call that carries the ADC Bearer token.
+    for _, value in ipairs({
+      "proj\r\nX-Injected: yes",
+      "proj with space",
+      "proj/../other",
+      "proj?alt=json",
+      "proj#frag",
+      "-leading-dash",
+    }) do
+      local ok, err = translate_with({ gcp_project_id = value })
+      assert.is_false(ok, value)
+      assert.truthy(err:find("google provider", 1, true), err)
+      assert.truthy(err:find("gcp_project_id", 1, true), err)
+      assert.truthy(err:find("not a usable project id", 1, true), err)
+    end
+  end)
+
+  it("names GOOGLE_CLOUD_PROJECT when the unsafe value came from the environment", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "proj\r\nX-Injected: yes"
+
+    -- `config.defaults()` seeds `gcp_project_id` from the environment, so the
+    -- error has to name the variable, not the config key the user never set.
+    local ok, err = translate_with({})
+
+    assert.is_false(ok)
+    assert.truthy(err:find("GOOGLE_CLOUD_PROJECT", 1, true), err)
+  end)
+
+  it("refuses an unsafe project id before spending the ADC refresh token", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "proj\r\nX-Injected: yes"
+
+    -- The refresh exchanges client_secret + refresh_token for an access token
+    -- this request can never use, and leaves it in the cache the other Google
+    -- providers share. The id is refused either way, so resolve it first and
+    -- spend nothing.
+    local ok, err, calls = translate_with({})
+
+    assert.is_false(ok)
+    assert.truthy(err:find("GOOGLE_CLOUD_PROJECT", 1, true), err)
+    assert.equals(0, #calls, err)
+  end)
+
+  it("reports an unsafe project id out of validate instead of accepting it", function()
+    write_google_adc("quota-project")
+    vim.env.GOOGLE_CLOUD_PROJECT = "proj\r\nX-Injected: yes"
+
+    -- `config.defaults()` seeds `gcp_project_id` from the environment, so this
+    -- is what setup() actually validates. google_llm.validate already reports;
+    -- google's accepted the provider and surfaced the problem only at the first
+    -- translate, after the exchange.
+    local ok, err = google.validate({ adc_path = adc_path, gcp_project_id = "proj\r\nX-Injected: yes" })
+
+    assert.is_false(ok)
+    err = tostring(err)
+    assert.truthy(err:find("google provider", 1, true), err)
+    assert.truthy(err:find("GOOGLE_CLOUD_PROJECT", 1, true), err)
+  end)
+
+  it("accepts a legacy domain-scoped project id", function()
+    write_google_adc("quota-project")
+
+    -- `domain.com:project` is a real, still-valid GCP id shape, so `.` and `:`
+    -- have to survive the check.
+    local ok, result, calls = translate_with({ gcp_project_id = "example.com:legacy" })
+
+    assert.is_true(ok, result)
+    assert.equals("x-goog-user-project: example.com:legacy", calls[2].opts.headers[3])
   end)
 
   it("surfaces blocked method guidance for HTTP 403 responses", function()
@@ -514,10 +699,14 @@ describe("google_llm provider", function()
   before_each(function()
     google_llm._reset_for_tests()
     adc_path = vim.fn.tempname()
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
   end)
 
   after_each(function()
     google_llm._reset_for_tests()
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
     if adc_path and vim.uv.fs_stat(adc_path) then
       vim.fn.delete(adc_path)
     end
@@ -550,6 +739,42 @@ describe("google_llm provider", function()
 
   it("accepts an api_key with an explicit gcp_project_id", function()
     assert.is_true(google_llm.validate({ api_key = "k", adc_path = adc_path, gcp_project_id = "proj" }))
+  end)
+
+  it("reports an unsafe gcp_project_id instead of raising out of validate", function()
+    write_adc("quota-project")
+
+    -- The id is interpolated into `projects/%s/locations/...`, so a `/` or a
+    -- `..` re-targets the request. validate() has to keep reporting rather
+    -- than raising, or setup()'s fall-back to echo turns into a traceback.
+    local ok, err = google_llm.validate({ adc_path = adc_path, gcp_project_id = "proj/../other" })
+
+    assert.is_false(ok)
+    err = tostring(err)
+    assert.truthy(err:find("google_llm provider", 1, true), err)
+    assert.truthy(err:find("gcp_project_id", 1, true), err)
+  end)
+
+  it("names the ADC quota_project_id when that is the unsafe value", function()
+    write_adc("quota project")
+
+    local ok, err = google_llm.validate({ adc_path = adc_path })
+
+    assert.is_false(ok)
+    assert.truthy(tostring(err):find("ADC quota_project_id", 1, true), tostring(err))
+  end)
+
+  it("accepts a legacy domain-scoped project id in the v3 URL", function()
+    write_adc("quota-project")
+
+    local calls = {}
+    local payload = make_payload("hello", "google_llm", { adc_path = adc_path, gcp_project_id = "example.com:legacy" })
+
+    assert.equals("hola", google_llm.translate(adc_http(calls, v3_ok), payload))
+    assert.equals(
+      "https://translation.googleapis.com/v3/projects/example.com:legacy/locations/us-central1:translateText",
+      calls[2].url
+    )
   end)
 
   it("translates through Advanced v3 with ADC credentials", function()
@@ -604,6 +829,75 @@ describe("google_llm provider", function()
     assert.equals("https://translation.googleapis.com/v3/projects/proj/locations/global:translateText", calls[2].url)
     local body = vim.json.decode(calls[2].opts.data)
     assert.equals("projects/proj/locations/global/models/general/translation-llm", body.model)
+  end)
+
+  it("rejects a location that is unsafe in the request URL", function()
+    write_adc("quota-project")
+
+    -- `location` is the third interpolant of the same v3 URL the project id
+    -- feeds, and it was left unchecked when the id was hardened. curl
+    -- normalises `..` before sending, so a `/` re-targets the path of an
+    -- ADC-Bearer-authenticated request; `?` and `#` truncate it; CR/LF is
+    -- rejected by curl only after the value has already been built in.
+    for _, value in ipairs({
+      "proj/../other",
+      "us-central1?x=1",
+      "us#1",
+      "us\r\nX-Injected: yes",
+    }) do
+      google_llm._reset_for_tests()
+      local calls = {}
+      local payload = make_payload("hello", "google_llm", {
+        adc_path = adc_path,
+        gcp_project_id = "proj",
+        location = value,
+      })
+
+      local ok, err = pcall(google_llm.translate, adc_http(calls, v3_ok), payload)
+
+      assert.is_false(ok, value)
+      err = tostring(err)
+      assert.truthy(err:find("google_llm provider", 1, true), err)
+      assert.truthy(err:find("location", 1, true), err)
+      -- Refused before anything is spent: not even the token refresh runs.
+      assert.equals(0, #calls, value)
+    end
+  end)
+
+  it("reports an unsafe location instead of raising out of validate", function()
+    write_adc("quota-project")
+
+    -- Same contract as the project id: setup()'s fall-back to echo has to stay
+    -- a warning, not a traceback.
+    local ok, err = google_llm.validate({ adc_path = adc_path, location = "us-central1/../v2" })
+
+    assert.is_false(ok)
+    err = tostring(err)
+    assert.truthy(err:find("google_llm provider", 1, true), err)
+    assert.truthy(err:find("location", 1, true), err)
+  end)
+
+  it("accepts the location ids Cloud Translation actually serves", function()
+    write_adc("quota-project")
+
+    -- `global` and the regional shape both have to survive the check.
+    for _, value in ipairs({ "global", "europe-west1" }) do
+      google_llm._reset_for_tests()
+      local calls = {}
+      local payload = make_payload("hello", "google_llm", {
+        adc_path = adc_path,
+        gcp_project_id = "proj",
+        location = value,
+      })
+
+      assert.equals("hola", google_llm.translate(adc_http(calls, v3_ok), payload))
+      assert.equals(
+        "https://translation.googleapis.com/v3/projects/proj/locations/" .. value .. ":translateText",
+        calls[2].url
+      )
+      local body = vim.json.decode(calls[2].opts.data)
+      assert.equals("projects/proj/locations/" .. value .. "/models/general/translation-llm", body.model)
+    end
   end)
 
   it("translates through Basic v2 with an api_key", function()

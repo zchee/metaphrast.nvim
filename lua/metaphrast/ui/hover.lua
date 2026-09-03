@@ -11,6 +11,7 @@ local M = {}
 ---@field sc integer|nil 0-based start column for charwise/blockwise selections.
 ---@field er integer 0-based last row of the translated range.
 ---@field ec integer|nil Exclusive end column for charwise/blockwise selections.
+---@field to_eol boolean|nil True when a blockwise block was `$`-extended to every row's own end.
 ---@field commentstring string|nil `commentstring` of the source buffer.
 ---@field lines string[] Exactly the lines that were translated.
 

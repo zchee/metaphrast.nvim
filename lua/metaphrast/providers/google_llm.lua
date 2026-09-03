@@ -19,12 +19,24 @@ local function model_path(project_id, location, model)
   return string.format("projects/%s/locations/%s/models/%s", project_id, location, model)
 end
 
+---What a location id may contain. GCP names regions with letters, digits and
+---`-` (`us-central1`, `europe-west1`), plus the multi-region `global`. The
+---characters this excludes are the ones that would re-target the v3 URL this
+---value is concatenated into rather than name a region: `/` (curl normalises
+---`..` before sending), `?`, `#`, and CR/LF, which curl's config parser
+---unescapes back into a request it then refuses.
+local LOCATION_PATTERN = "^[%w%-]+$"
+
+---Resolve the region the request and the model resource both name.
 ---@param cfg table
 ---@return string
 local function resolve_location(cfg)
   local location = cfg.location
   if not location or location == "" then
     return DEFAULT_LOCATION
+  end
+  if not location:match(LOCATION_PATTERN) then
+    error(string.format("%s provider: location is not a usable location id: %s", M.name, vim.inspect(location)))
   end
   return location
 end
@@ -57,7 +69,18 @@ function M.validate(cfg)
   elseif not cfg.api_key or cfg.api_key == "" then
     return false, "google_llm provider requires api_key or ADC credentials"
   end
-  if not gcp_auth.resolve_project_id(cfg, credentials) then
+  -- Both resolvers raise on a value that cannot name what it claims to;
+  -- validate() reports instead, so `setup()` keeps falling back to echo rather
+  -- than handing the user a traceback.
+  local located, location = pcall(resolve_location, cfg)
+  if not located then
+    return false, tostring(location)
+  end
+  local resolved, project_id = pcall(gcp_auth.resolve_project_id, cfg, credentials, M.name)
+  if not resolved then
+    return false, tostring(project_id)
+  end
+  if not project_id then
     return false, "google_llm provider requires gcp_project_id (or an ADC quota_project_id)"
   end
   return true
@@ -79,7 +102,7 @@ function M.translate(_http, payload)
   if gcp_auth.file_exists(cfg.adc_path) then
     use_adc = true
     local credentials = gcp_auth.load_adc_credentials(cfg.adc_path, M.name)
-    local project_id = gcp_auth.resolve_project_id(cfg, credentials)
+    local project_id = gcp_auth.resolve_project_id(cfg, credentials, M.name)
     if not project_id then
       error("google_llm provider requires gcp_project_id (or an ADC quota_project_id)")
     end
@@ -103,7 +126,7 @@ function M.translate(_http, payload)
     if not cfg.api_key or cfg.api_key == "" then
       error("google_llm provider requires api_key or ADC credentials")
     end
-    local project_id = gcp_auth.resolve_project_id(cfg, nil)
+    local project_id = gcp_auth.resolve_project_id(cfg, nil, M.name)
     if not project_id then
       error("google_llm provider requires gcp_project_id (or an ADC quota_project_id)")
     end

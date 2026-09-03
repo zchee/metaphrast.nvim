@@ -3,8 +3,87 @@ local metaphrast = require("metaphrast")
 local registry = require("metaphrast.providers")
 
 describe("setup", function()
+  local ui = require("metaphrast.ui")
+
   before_each(function()
     metaphrast._reset_for_tests()
+  end)
+
+  ---A minimal provider table, distinguishable by identity.
+  ---@return table
+  local function custom_provider()
+    return {
+      translate = function(_, payload)
+        return payload.text .. "[custom]"
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    }
+  end
+
+  ---Notifier history entries whose message contains `needle`.
+  ---@param needle string
+  ---@return table[]
+  local function entries_matching(needle)
+    return vim.tbl_filter(function(entry)
+      return type(entry.msg) == "string" and entry.msg:find(needle, 1, true) ~= nil
+    end, ui.require_snacks().notifier.get_history())
+  end
+
+  it("AC-F5: keeps a provider registered before setup over the built-in of that name", function()
+    local custom = custom_provider()
+    metaphrast.register_provider("google", custom)
+
+    metaphrast.setup({ provider = "echo" })
+
+    -- setup() reset the whole registry, so a config that registered its
+    -- provider before calling setup() silently lost it.
+    assert.equals(custom, registry.get("google"))
+  end)
+
+  it("AC-F5: keeps a provider registered after setup", function()
+    metaphrast.setup({ provider = "echo" })
+    local custom = custom_provider()
+
+    metaphrast.register_provider("google", custom)
+
+    assert.equals(custom, registry.get("google"))
+  end)
+
+  it("AC-F5: keeps a user provider under a fresh name across setup", function()
+    local mine = custom_provider()
+    metaphrast.register_provider("mine", mine)
+
+    metaphrast.setup({ provider = "echo" })
+
+    assert.equals(mine, registry.get("mine"))
+    assert.is_true(vim.tbl_contains(registry.names(), "mine"))
+  end)
+
+  it("AC-F5: reports the built-in a user registration shadowed", function()
+    local before = #entries_matching("shadow")
+    metaphrast.register_provider("google", custom_provider())
+
+    metaphrast.setup({ provider = "echo" })
+
+    local reported = entries_matching("shadow")
+    assert.equals(before + 1, #reported)
+    assert.equals("debug", reported[#reported].level)
+    assert.truthy(reported[#reported].msg:find("google", 1, true), reported[#reported].msg)
+  end)
+
+  it("AC-F5: says nothing about the built-ins on a second setup", function()
+    metaphrast.setup({ provider = "echo" })
+    local google = registry.get("google")
+    local before = #entries_matching("shadow")
+
+    metaphrast.setup({ provider = "echo" })
+
+    -- The seven built-ins are already present the second time round, so an
+    -- identity-blind skip report would toast every one of them.
+    assert.equals(google, registry.get("google"))
+    assert.equals(before, #entries_matching("shadow"))
   end)
 
   it("falls back to echo when provider credentials are missing", function()
@@ -128,6 +207,123 @@ describe("translation core", function()
     assert.equals("hi #1", first)
     assert.equals("hi #1", second)
     assert.equals(1, calls)
+  end)
+
+  it("AC-C1: refuses a reply larger than four times max_chars", function()
+    local calls = 0
+    local reply_size = 32001
+    registry.register("flood_reply", {
+      translate = function()
+        calls = calls + 1
+        return string.rep("a", reply_size)
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metaphrast.config.provider = "flood_reply"
+    metaphrast.config.cache.ttl = 5
+    assert.equals(8000, metaphrast.config.max_chars)
+    local text = string.rep("q", 137)
+
+    local ok, err = pcall(metaphrast.translate, text, { target_lang = "fr" })
+
+    -- The request is bounded by `max_chars`, so a reply orders of magnitude
+    -- larger is a provider fault, not a translation. Refuse it before
+    -- `cache.put`, or the fault outlives the call, and name all three numbers
+    -- the user needs to tell a runaway provider from a raised limit.
+    assert.is_false(ok)
+    err = tostring(err)
+    assert.truthy(err:find("32001", 1, true), err)
+    assert.truthy(err:find("137", 1, true), err)
+    assert.truthy(err:find("32000", 1, true), err)
+
+    -- Reaching the provider a second time is what proves nothing was cached.
+    reply_size = 32000
+    local out = metaphrast.translate(text, { target_lang = "fr" })
+    assert.equals(32000, #out)
+    assert.equals(2, calls)
+  end)
+
+  it("AC-C4: refuses an oversize cached reply without calling the provider", function()
+    local calls = 0
+    registry.register("flood_cached", {
+      translate = function()
+        calls = calls + 1
+        return string.rep("a", 32000)
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metaphrast.config.provider = "flood_cached"
+    -- Memory-only: a TTL this short never reaches the disk cache.
+    metaphrast.config.cache.ttl = 5
+    local text = string.rep("q", 137)
+
+    -- Seed the entry while it is still within the guard, exactly as a runaway
+    -- provider did for a user running a build that predates the guard.
+    assert.equals(32000, #metaphrast.translate(text, { target_lang = "fr" }))
+    assert.equals(1, calls)
+
+    -- Lower the ceiling so the stored reply is now oversize. The request itself
+    -- still fits, so the refusal can only come from the reply guard.
+    metaphrast.config.max_chars = 137
+    local ok, err = pcall(metaphrast.translate, text, { target_lang = "fr" })
+
+    -- A hit returned before the guard replayed the fault for the whole TTL,
+    -- with the write cap as the only thing between it and the buffer.
+    assert.is_false(ok)
+    err = tostring(err)
+    assert.truthy(err:find("32000", 1, true), err)
+    assert.truthy(err:find("137", 1, true), err)
+    assert.truthy(err:find("548", 1, true), err)
+    -- Refused, not re-fetched: the provider is not asked to repeat the fault.
+    assert.equals(1, calls)
+  end)
+
+  it("AC-C5: ignores a max_chars outside its domain, warns once, and uses the default", function()
+    local ui = require("metaphrast.ui")
+    local function warnings()
+      return vim.tbl_filter(function(entry)
+        return type(entry.msg) == "string" and entry.msg:find("max_chars must be", 1, true) ~= nil
+      end, ui.require_snacks().notifier.get_history())
+    end
+    registry.register("echo_chars", {
+      translate = function(_, payload)
+        return payload.text .. "!"
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metaphrast.config.provider = "echo_chars"
+    metaphrast.config.cache.enabled = false
+    local before = #warnings()
+
+    ---Translate one short text with `value` configured.
+    ---@param value any
+    ---@return boolean ok
+    ---@return string translated
+    local function translate_with(value)
+      metaphrast.config.max_chars = value
+      return pcall(metaphrast.translate, "hi", { target_lang = "fr" })
+    end
+
+    -- `-1` refused every request, `"8000"` raised `attempt to compare number
+    -- with string`, and NaN/infinity silently disabled both the request bound
+    -- and the reply guard derived from it. All four now take the default.
+    for _, value in ipairs({ -1, 0 / 0, math.huge, "8000" }) do
+      local ok, out = translate_with(value)
+      assert.is_true(ok, tostring(value) .. ": " .. tostring(out))
+      assert.equals("hi!", out)
+    end
+
+    -- One toast for the whole session, and it names the first bad value.
+    local reported = warnings()
+    assert.equals(before + 1, #reported)
+    assert.equals("warn", reported[#reported].level)
+    assert.truthy(reported[#reported].msg:find("-1", 1, true), reported[#reported].msg)
   end)
 
   it("rejects calls that exceed cost guard", function()
@@ -989,7 +1185,7 @@ describe("blockwise replace", function()
     }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
 
-  it("AC12: leaves a blank surplus line empty instead of pad-only whitespace", function()
+  it("AC12: keeps the leader on a blank surplus line instead of emptying it", function()
     capturing_provider("block_blank_surplus", function()
       return "alpha beta gamma delta epsilon\n\nzeta"
     end)
@@ -998,19 +1194,20 @@ describe("blockwise replace", function()
     metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
 
     local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    -- A pad-only line is trailing whitespace the user never wrote, and every
-    -- trim-on-save formatter would report it as their diff.
+    -- The paragraph break the provider sent is a blank *comment* line, not a
+    -- hole in the comment block: emitting it bare uncommented the file and cost
+    -- a line, since the reply was flattened into one wrapped block first.
     assert.same({
       "  // alpha beta  TAIL1",
       "  // gamma delta  TAIL2",
       "  // epsilon",
-      "",
-      "",
+      "  //",
       "  // zeta",
       "x := 1",
     }, lines)
     for i, line in ipairs(lines) do
       assert.is_falsy(line:match("^%s+$"), string.format("line %d is whitespace only: %q", i, line))
+      assert.is_falsy(line:match("%s$"), string.format("line %d has trailing whitespace: %q", i, line))
     end
   end)
 
@@ -1026,10 +1223,20 @@ describe("blockwise replace", function()
       { "cend of zero is left alone", "日本語", 0, 0, 0, 0 },
       { "an empty row yields an empty region", "", 4, 9, 0, 0 },
       { "an ASCII block is untouched", "  // hello", 2, 10, 2, 10 },
+      -- A `$` block has no shared end column: `to_eol` replaces the clamp on
+      -- `ec` with the row's own length. Every row here has `ec < #line`, the
+      -- only shape that separates the two calls — `math.min(ec, #line)` already
+      -- returns `#line` when the mark reaches or passes the row's end.
+      { "a fixed block stops at its end column", "  // hello there  TAIL", 2, 4, 2, 4 },
+      { "a $ block runs to the row's own end", "  // hello there  TAIL", 2, 4, 2, 22, true },
+      { "a $ block still resolves a multibyte row", "  // 日本語", 2, 5, 2, 14, true },
+      { "a $ block leaves a clamped-empty row empty", "ab", 6, 20, 2, 2, true },
     }
     for _, case in ipairs(cases) do
-      local label, subject, sc, ec, want_start, want_end = unpack(case)
-      local cstart, cend = metaphrast._block_columns(subject, sc, ec)
+      local label, subject, sc, ec, want_start, want_end, to_eol = unpack(case)
+      -- A trailing `nil` is indistinguishable from omitting the argument, so the
+      -- rows without `to_eol` are the plain three-argument call.
+      local cstart, cend = metaphrast._block_columns(subject, sc, ec, to_eol)
       assert.equals(want_start, cstart, label .. " (cstart)")
       assert.equals(want_end, cend, label .. " (cend)")
     end
@@ -1079,6 +1286,205 @@ describe("blockwise replace", function()
 
     assert.equals("abcd 日本", captured())
   end)
+
+  it("AC-D3: leaves no trailing whitespace on a blank line in a surplus block", function()
+    capturing_provider("block_blank_mismatch", function()
+      return "one\n\ntwo\n\nthree"
+    end)
+    local bufnr = block_buffer({ "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }, "// %s", 1, 2, 2, 15)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    -- On this path the blank only becomes a genuine `""` once the reply is
+    -- split per paragraph; before that it still carried an embedded newline
+    -- and the pad-only line was manufactured by the flatten instead.
+    assert.same({
+      "  // one  TAIL1",
+      "  //  TAIL2",
+      "  // two",
+      "  //",
+      "  // three",
+      "x := 1",
+    }, lines)
+    for i, line in ipairs(lines) do
+      assert.is_falsy(line:match("%s$"), string.format("line %d has trailing whitespace: %q", i, line))
+    end
+  end)
+
+  it("AC-B2: keeps the leader on a block line the provider split with a newline", function()
+    capturing_provider("block_newline_leader", function()
+      return "uno\ndos"
+    end)
+    local bufnr = block_buffer({ "  // hello there  T1", "  // second line  T2", "x := 1" }, "// %s", 1, 2, 2, 15)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- The reply's newline is discovered after `comment.reapply` has already run,
+    -- so a single wrapped block leaves the split-off row bare: the layout layer
+    -- has to split the reply into paragraphs before the leaders are applied.
+    assert.same({
+      "  // uno  T1",
+      "  // dos  T2",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+end)
+
+---Drive a real visual selection with `feedkeys` so the editor's own stored
+---selection is established. `block_buffer` sets `'<`/`'>` through
+---`nvim_buf_set_mark` alone, which never records a stored selection and so can
+---never reproduce `$`: the marks a `$` block leaves are byte-identical to those
+---of a fixed-width block wider than its end row.
+---
+---Every caller gets a fresh buffer, and no fixture outside this file's `$` cases
+---may reuse one: a buffer that has held a real `$` block keeps that selection,
+---and a later mark-only fixture on it would reach the residual documented at
+---`block_is_to_eol`.
+---@param buf_lines string[]
+---@param commentstring string
+---@param cursor integer[] `{ row, col }` with a 1-indexed row and 0-indexed col.
+---@param keys string Keys in `vim.keycode` notation, ending back in normal mode.
+---@return integer bufnr
+local function visual_block_buffer(buf_lines, commentstring, cursor, keys)
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.bo[bufnr].commentstring = commentstring
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, buf_lines)
+  vim.api.nvim_win_set_cursor(0, cursor)
+  vim.api.nvim_feedkeys(vim.keycode(keys), "x", false)
+  return bufnr
+end
+
+---Record every `ModeChanged` transition until the returned function is called.
+---The `gv` probe is the only construct in this plugin that enters visual mode,
+---so the event pair is the observable a user's own `ModeChanged` autocmd sees;
+---asserting it pins which selections pay for the probe and which skip it.
+---@return fun(): string[] stop Removes the recorder and returns `old:new` pairs.
+local function record_mode_changes()
+  local events = {}
+  local group = vim.api.nvim_create_augroup("MetaphrastSpecModeChanged", { clear = true })
+  vim.api.nvim_create_autocmd("ModeChanged", {
+    group = group,
+    pattern = "*",
+    callback = function(args)
+      table.insert(events, args.match)
+    end,
+  })
+  return function()
+    vim.api.nvim_del_augroup_by_id(group)
+    return events
+  end
+end
+
+describe("blockwise $ selection", function()
+  local dollar_lines = { "  // alpha beta gamma", "  // x", "  // delta epsilon" }
+
+  before_each(function()
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+  end)
+
+  it("AC-E1: translates every row of a $ block to its own end", function()
+    local captured = capturing_provider("block_dollar", function()
+      return "uno dos"
+    end)
+    local bufnr = visual_block_buffer(dollar_lines, "// %s", { 1, 2 }, "<C-v>1j$<Esc>")
+    -- `'>` holds the end row's real column, never `v:maxcol`, which is why the
+    -- marks alone cannot answer this.
+    assert.same({ 0, 2, 7, 0 }, vim.fn.getpos("'>"))
+
+    local stop = record_mode_changes()
+    metaphrast.translate_selection(bufnr, "\22", { replace = true, target_lang = "es" })
+
+    -- A `$` candidate is the one shape that still pays for the probe: exactly
+    -- one round trip into blockwise visual and back, and nothing else.
+    assert.same({ "n:\22", "\22:n" }, stop())
+    -- Row 1 contributes its whole comment, not the four bytes the end row's
+    -- length would clamp it to.
+    assert.equals("alpha beta gamma x", captured())
+    -- The block is now 19 columns wide, so the one-line reply fills row 1 and
+    -- row 2's slice is replaced by nothing, leaving that row's indent alone.
+    -- That collapse is `replace_selection_text`'s existing behaviour for any
+    -- reply with fewer lines than the block has rows.
+    assert.same({
+      "  // uno dos",
+      "  ",
+      "  // delta epsilon",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC-E2: leaves a $h block resolving as a fixed-width block", function()
+    local captured = capturing_provider("block_dollar_back", function()
+      return "uno dos"
+    end)
+    local bufnr = visual_block_buffer(dollar_lines, "// %s", { 1, 2 }, "<C-v>1j$h<Esc>")
+
+    local stop = record_mode_changes()
+    metaphrast.translate_selection(bufnr, "\22", { replace = false, target_lang = "es" })
+
+    -- `h` leaves `'>` inside the end row, which a `$` never does, so the probe
+    -- is skipped outright: a fixed-width block costs a user's `ModeChanged`
+    -- autocmd nothing and leaves `'>` exactly where the caller set it.
+    assert.same({}, stop())
+    -- `h` clears `curswant`, so the probe reports no `$` and both rows clamp to
+    -- the shared end column exactly as they did before the probe existed.
+    assert.equals("a x", captured())
+    assert.same(dollar_lines, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC-E3: leaves cursor, view, mode, marks, jumplist and register untouched", function()
+    capturing_provider("block_dollar_probe", function()
+      return "uno dos"
+    end)
+    local bufnr = visual_block_buffer(dollar_lines, "// %s", { 1, 2 }, "<C-v>1j$<Esc>")
+    local function snapshot()
+      return {
+        curpos = vim.fn.getcurpos(),
+        view = vim.fn.winsaveview(),
+        mode = vim.fn.mode(),
+        start_mark = vim.fn.getpos("'<"),
+        end_mark = vim.fn.getpos("'>"),
+        jumps = #vim.fn.getjumplist()[1],
+        register = vim.fn.getreg('"'),
+        regtype = vim.fn.getregtype('"'),
+      }
+    end
+    local before = snapshot()
+
+    -- Read path only: a write-back relocates `'<`/`'>` through `mark_adjust`
+    -- whatever the probe does, so mark invariance can only be asserted here.
+    metaphrast.translate_selection(bufnr, "\22", { replace = false, target_lang = "es" })
+
+    assert.same(before, snapshot())
+  end)
+
+  it("AC-E7: rejects a stale stored selection whose end mark is inside the row", function()
+    local captured = capturing_provider("block_dollar_stale", function()
+      return "uno dos"
+    end)
+    local end_line = "  // x  TAIL"
+    local bufnr = visual_block_buffer(
+      { dollar_lines[1], end_line, dollar_lines[3] },
+      "// %s",
+      { 1, 2 },
+      "<C-v>1j$<Esc>"
+    )
+    vim.api.nvim_buf_set_mark(bufnr, "<", 1, 2, {})
+    vim.api.nvim_buf_set_mark(bufnr, ">", 2, 5, {})
+    -- The stored selection is still the real `$` block, so every guard above the
+    -- end-mark test passes: `gv` restores blockwise over the same rows with a
+    -- stale `curswant`. Only the raw end column separates this from a real `$`.
+    vim.cmd("normal! gv")
+    assert.equals("\22", vim.fn.mode())
+    assert.equals(vim.v.maxcol, vim.fn.winsaveview().curswant)
+    vim.cmd("normal! \27")
+    assert.is_true(5 < #end_line)
+
+    metaphrast.translate_selection(bufnr, "\22", { replace = false, target_lang = "es" })
+
+    assert.equals("a x", captured())
+  end)
 end)
 
 describe("charwise replace", function()
@@ -1101,6 +1507,41 @@ describe("charwise replace", function()
     assert.equals("日本語", captured())
     assert.same({ "abc 日本語 [cap] def" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
   end)
+
+  it("AC-B2: keeps the leader on a charwise line the provider split with a newline", function()
+    capturing_provider("charwise_newline_leader", function()
+      return "uno\ndos"
+    end)
+    local bufnr = block_buffer({ "  // hello there", "x := 1" }, "// %s", 1, 2, 1, 15)
+
+    metaphrast.translate_selection(bufnr, "v", { replace = true, target_lang = "es" })
+
+    -- `nvim_buf_set_text` starts the split-off line at column 0, so its indent
+    -- is an asserted known residual; the leader itself is not, and losing it
+    -- uncomments the line.
+    assert.same({
+      "  // uno",
+      "// dos",
+      "x := 1",
+    }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC-B5: refuses a charwise reply that would insert more than max_inserted_lines", function()
+    capturing_provider("charwise_flood", function()
+      return string.rep("x\n", 300)
+    end)
+    local original = { "  // hello there  TAIL1", "  // second line  TAIL2", "x := 1" }
+    local bufnr = block_buffer(original, "// %s", 1, 2, 2, 15)
+
+    local _, applied, reason = metaphrast.translate_selection(bufnr, "v", { replace = true, target_lang = "es" })
+
+    -- The cap belongs to the write, not to one selection shape: a runaway reply
+    -- floods a charwise buffer exactly as it floods a blockwise one.
+    assert.is_false(applied)
+    assert.truthy(reason:find("max_inserted_lines", 1, true), reason)
+    assert.truthy(reason:find("200", 1, true), reason)
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
 end)
 
 describe("linewise replace", function()
@@ -1119,11 +1560,194 @@ describe("linewise replace", function()
 
     -- `nvim_buf_set_lines` rejects an item containing a newline, so handing it
     -- the rendered table raised `'replacement string' item contains newlines`
-    -- and left the caller with a traceback instead of a write. Reapplying the
-    -- leader to the line the provider split off is a separate layout question;
-    -- what this pins is that the write is legal and reports itself.
+    -- and left the caller with a traceback instead of a write. The line the
+    -- provider split off now keeps its leader too: the layout layer splits the
+    -- reply into paragraphs before `comment.reapply` runs.
     assert.is_true(applied)
-    assert.same({ "  // uno", "dos", "x := 1" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    assert.same({ "  // uno", "  // dos", "x := 1" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC-B1: keeps the leader on every line a provider newline split off", function()
+    capturing_provider("linewise_leader_ja", function()
+      return "行1\n行2"
+    end)
+    local bufnr = block_buffer({ "// Foo does a thing.", "func Foo() {}" }, "// %s", 1, 0, 1, 0)
+
+    local _, applied = metaphrast.translate_range(bufnr, 0, 1, { replace = true, target_lang = "ja" })
+
+    assert.is_true(applied)
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    assert.same({ "// 行1", "// 行2", "func Foo() {}" }, lines)
+    -- A bare split-off line is not a layout nicety: it uncomments source, so
+    -- every line the translation produced has to carry the leader.
+    for i = 1, 2 do
+      assert.truthy(lines[i]:match("^%s*// "), string.format("line %d lost its leader: %q", i, lines[i]))
+    end
+  end)
+
+  it("AC-D2: keeps a blank comment line bare when the paragraph counts match", function()
+    capturing_provider("linewise_blank_between", function()
+      return "uno\ndos"
+    end)
+    -- Three comment rows give `para_count == 2`, which the two-paragraph reply
+    -- matches, so the *match* branch runs and hands `comment.reapply` a genuine
+    -- `""`. A two-row range would give `para_count == 1`, route into the
+    -- mismatch branch, and pass for the wrong reason: that output has no
+    -- leader-only line in it at all.
+    local bufnr = block_buffer({ "// alpha", "//", "// beta", "func F() {}" }, "// %s", 1, 0, 4, 0)
+
+    metaphrast.translate_range(bufnr, 0, 3, { replace = true, target_lang = "es" })
+
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    assert.same({ "// uno", "//", "// dos", "func F() {}" }, lines)
+    for i, line in ipairs(lines) do
+      assert.is_falsy(line:match("%s$"), string.format("line %d has trailing whitespace: %q", i, line))
+    end
+  end)
+
+  it("AC-B5: refuses a linewise reply that would insert more than max_inserted_lines", function()
+    capturing_provider("linewise_flood", function()
+      return string.rep("x\n", 300)
+    end)
+    local original = { "  // hello there", "  // second line", "x := 1" }
+    local bufnr = block_buffer(original, "// %s", 1, 0, 2, 0)
+
+    local _, applied, reason = metaphrast.translate_range(bufnr, 0, 1, { replace = true, target_lang = "es" })
+
+    -- The linewise path wrote the flood unbounded, so the cap has to guard the
+    -- write itself rather than the blockwise branch it happened to live in.
+    assert.is_false(applied)
+    assert.truthy(reason:find("max_inserted_lines", 1, true), reason)
+    assert.truthy(reason:find("200", 1, true), reason)
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+
+  it("AC-F6: ignores a non-number max_inserted_lines, warns once, and still refuses", function()
+    local ui = require("metaphrast.ui")
+    local function warnings()
+      return vim.tbl_filter(function(entry)
+        return type(entry.msg) == "string" and entry.msg:find("max_inserted_lines must be a number", 1, true) ~= nil
+      end, ui.require_snacks().notifier.get_history())
+    end
+    local original = { "  // hello there", "  // second line", "x := 1" }
+
+    ---Flood the cap with `value` configured, and report what came back.
+    ---@param value any
+    ---@return boolean ok
+    ---@return boolean|nil applied
+    ---@return string|nil reason
+    ---@return integer bufnr
+    local function flood(value)
+      capturing_provider("linewise_flood_" .. tostring(value), function()
+        return string.rep("x\n", 300)
+      end)
+      local bufnr = block_buffer(original, "// %s", 1, 0, 2, 0)
+      metaphrast.config.max_inserted_lines = value
+      local ok, _, applied, reason = pcall(metaphrast.translate_range, bufnr, 0, 1, {
+        replace = true,
+        target_lang = "es",
+      })
+      return ok, applied, reason, bufnr
+    end
+
+    local before = #warnings()
+    -- A string cap raised `attempt to compare string with number` and left the
+    -- caller with a traceback, so the absence of the error is asserted by pcall
+    -- succeeding rather than by matching the old message.
+    local ok, applied, reason, bufnr = flood("200")
+
+    assert.is_true(ok)
+    assert.is_false(applied)
+    assert.truthy(reason:find("max_inserted_lines", 1, true), reason)
+    assert.truthy(reason:find("200", 1, true), reason)
+    assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+
+    local reported = warnings()
+    assert.equals(before + 1, #reported)
+    assert.equals("warn", reported[#reported].level)
+    assert.truthy(reported[#reported].msg:find('"200"', 1, true), reported[#reported].msg)
+
+    -- The value is still wrong on the next write; the toast is not repeated.
+    assert.is_true((flood("200")))
+    assert.equals(before + 1, #warnings())
+
+    -- A reset re-arms the report, so the next session hears about it again.
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo" })
+    assert.is_true((flood("200")))
+    assert.equals(before + 2, #warnings())
+  end)
+
+  ---Replace the two comment rows with `cap` configured and `reply` returned.
+  ---@param cap any
+  ---@param reply string
+  ---@param original string[]
+  ---@return boolean applied
+  ---@return string|nil reason
+  ---@return integer bufnr
+  local function replace_with_cap(cap, reply, original)
+    capturing_provider("cap_domain_" .. tostring(cap) .. "_" .. #reply, function()
+      return reply
+    end)
+    local bufnr = block_buffer(original, "// %s", 1, 0, 2, 0)
+    metaphrast.config.max_inserted_lines = cap
+    local _, applied, reason = metaphrast.translate_range(bufnr, 0, 1, { replace = true, target_lang = "es" })
+    return applied, reason, bufnr
+  end
+
+  it("AC-F7: ignores a max_inserted_lines outside its domain and still caps the write", function()
+    local ui = require("metaphrast.ui")
+    local function warnings()
+      return vim.tbl_filter(function(entry)
+        return type(entry.msg) == "string" and entry.msg:find("max_inserted_lines must be", 1, true) ~= nil
+      end, ui.require_snacks().notifier.get_history())
+    end
+    local original = { "  // hello there", "  // second line", "x := 1" }
+    local flood = string.rep("x\n", 300)
+    local before = #warnings()
+
+    -- `-1` is a number, so the type guard passed it through and every
+    -- comparison against it was true: a reply that fills the block's own rows
+    -- and adds none was refused as over the limit, saying only `(-1)`.
+    local applied, reason = replace_with_cap(-1, "uno\ndos", original)
+    assert.is_true(applied, tostring(reason))
+
+    -- NaN and infinity are the mirror image: every comparison against them is
+    -- false, so the runaway-reply cap was silently off and a 300-line reply
+    -- reached the buffer.
+    for _, cap in ipairs({ 0 / 0, math.huge }) do
+      local flooded, why, bufnr = replace_with_cap(cap, flood, original)
+      assert.is_false(flooded, tostring(cap))
+      assert.truthy(why:find("200", 1, true), why)
+      assert.same(original, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+    end
+
+    -- One toast for the three bad values, naming the first of them.
+    local reported = warnings()
+    assert.equals(before + 1, #reported)
+    assert.equals("warn", reported[#reported].level)
+    assert.truthy(reported[#reported].msg:find("-1", 1, true), reported[#reported].msg)
+  end)
+
+  it("AC-F8: re-arms the cap warning on a second setup, not only on a reset", function()
+    local ui = require("metaphrast.ui")
+    local function warnings()
+      return vim.tbl_filter(function(entry)
+        return type(entry.msg) == "string" and entry.msg:find("max_inserted_lines must be", 1, true) ~= nil
+      end, ui.require_snacks().notifier.get_history())
+    end
+    local original = { "  // hello there", "  // second line", "x := 1" }
+    local before = #warnings()
+
+    assert.is_false((replace_with_cap("200", string.rep("x\n", 300), original)))
+    assert.equals(before + 1, #warnings())
+
+    -- The flag was session-scoped and only `_reset_for_tests` cleared it, so a
+    -- user who fixed one bad value and later set another heard nothing for the
+    -- rest of the session. `setup()` is where the value can actually change.
+    metaphrast.setup({ provider = "echo" })
+    assert.is_false((replace_with_cap(-1, string.rep("x\n", 300), original)))
+    assert.equals(before + 2, #warnings())
   end)
 end)
 

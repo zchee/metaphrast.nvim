@@ -27,15 +27,133 @@ local M = {
 M.http = http_builder.build(M.config.http)
 M.http_async = http_builder.build_async(M.config.http)
 
+local BUILTIN_PROVIDERS = {
+  provider_echo,
+  provider_google,
+  provider_google_llm,
+  provider_deepl,
+  provider_openai,
+  provider_gemini,
+  provider_openrouter,
+}
+
+---Fill in the built-in providers without disturbing what a user registered.
+---
+---`setup()` used to reset the registry first, which discarded every provider
+---registered through `M.register_provider` -- so whether a user's provider
+---survived depended on whether they registered it before or after `setup()`.
+---A user registration now wins over a built-in of the same name in either
+---order, and the skip report compares tables by identity so a second
+---`setup()` (a lazy-loader reload, a re-sourced config) finds the seven
+---built-ins already present and says nothing about them.
 local function register_builtin()
-  registry.reset()
-  registry.register(provider_echo.name, provider_echo)
-  registry.register(provider_google.name, provider_google)
-  registry.register(provider_google_llm.name, provider_google_llm)
-  registry.register(provider_deepl.name, provider_deepl)
-  registry.register(provider_openai.name, provider_openai)
-  registry.register(provider_gemini.name, provider_gemini)
-  registry.register(provider_openrouter.name, provider_openrouter)
+  local shadowed = {}
+  for _, provider in ipairs(BUILTIN_PROVIDERS) do
+    local existing = registry.get(provider.name)
+    if existing == nil then
+      registry.register(provider.name, provider)
+    elseif existing ~= provider then
+      table.insert(shadowed, provider.name)
+    end
+  end
+  if #shadowed > 0 then
+    ui.notify(
+      string.format("metaphrast: user registration shadows the built-in provider(s): %s", table.concat(shadowed, ", ")),
+      "debug"
+    )
+  end
+end
+
+local DEFAULT_MAX_INSERTED_LINES = 200
+local DEFAULT_MAX_CHARS = 8000
+local warned_max_inserted_lines = false
+local warned_max_chars = false
+
+---Whether a configured bound can be compared against a size at all.
+---
+---`type(v) == "number"` is not enough. NaN and infinity are numbers, and every
+---comparison against them is false, so either one silently removes the bound
+---the caller thinks they configured -- the opposite of the refusal the string
+---case produced, and just as wrong.
+---@param value any
+---@return boolean
+local function is_finite_number(value)
+  return type(value) == "number" and value == value and value < math.huge and value > -math.huge
+end
+
+---Resolve the write cap, ignoring a value outside its domain.
+---
+---The cap is compared against a row count, so a string here raised
+---`attempt to compare string with number` and the write failed with a
+---traceback instead of a refusal. A negative value refused every write,
+---including a reply that adds no rows at all, and NaN or infinity disabled the
+---runaway-reply protection outright. The ignored value is reported once.
+---@return integer
+local function resolve_max_inserted_lines()
+  local configured = M.config.max_inserted_lines
+  if is_finite_number(configured) and configured >= 0 then
+    return math.floor(configured)
+  end
+  if configured ~= nil and not warned_max_inserted_lines then
+    warned_max_inserted_lines = true
+    ui.notify(
+      string.format(
+        "metaphrast: max_inserted_lines must be a number >= 0, got %s; using %d",
+        vim.inspect(configured),
+        DEFAULT_MAX_INSERTED_LINES
+      ),
+      "warn"
+    )
+  end
+  return DEFAULT_MAX_INSERTED_LINES
+end
+
+---Resolve the request ceiling, ignoring a value outside its domain.
+---
+---It bounds the request and, multiplied by four, the reply, so the same
+---hazards apply: a string raised `attempt to compare number with string`, a
+---non-positive value refused every request, and NaN or infinity disabled both
+---bounds at once. The ignored value is reported once.
+---@return integer
+local function resolve_max_chars()
+  local configured = M.config.max_chars
+  if is_finite_number(configured) and configured > 0 then
+    return math.floor(configured)
+  end
+  if configured ~= nil and not warned_max_chars then
+    warned_max_chars = true
+    ui.notify(
+      string.format(
+        "metaphrast: max_chars must be a number > 0, got %s; using %d",
+        vim.inspect(configured),
+        DEFAULT_MAX_CHARS
+      ),
+      "warn"
+    )
+  end
+  return DEFAULT_MAX_CHARS
+end
+
+---Refuse a reply that dwarfs the request it answers.
+---
+---The request is already bounded by `max_chars`, so a reply orders of magnitude
+---larger is a provider fault rather than a translation, and every downstream
+---consumer (wrap, layout, the buffer write) pays for it.
+---@param translated string
+---@param text string The request the reply answers.
+---@param max_reply integer
+local function refuse_oversize_reply(translated, text, max_reply)
+  if #translated > max_reply then
+    error(
+      string.format(
+        "provider reply too long (%d chars for a %d-char request > %d); translation discarded",
+        #translated,
+        #text,
+        max_reply
+      ),
+      0
+    )
+  end
 end
 
 local function validate_provider(name, config_table)
@@ -53,6 +171,11 @@ end
 function M.setup(opts)
   ui.require_snacks()
   register_builtin()
+  -- Both reports are once per session, and `setup()` is the only place the
+  -- values can change. Without this a user who fixed one bad value and later
+  -- set another heard nothing for the rest of the session.
+  warned_max_inserted_lines = false
+  warned_max_chars = false
   local merged = cfg.merge(opts)
   local ok, err = validate_provider(merged.provider, merged)
   if not ok then
@@ -60,6 +183,9 @@ function M.setup(opts)
     merged.provider = "echo"
   end
   M.config = merged
+  -- Only here: `ui.notify` reaches snacks, which `require_snacks()` above has
+  -- just proved is present. Wiring it at load time would raise without it.
+  http_builder.notify = ui.notify
   M.http = http_builder.build(merged.http)
   M.http_async = http_builder.build_async(merged.http)
   cfg.warn_unknown_win_keys(opts and opts.ui and opts.ui.win, ui.notify)
@@ -80,10 +206,11 @@ local function perform_translate(http_fn, text, opts)
   end
   local target_lang = options.target_lang or config_table.target_lang
   local source_lang = options.source_lang or config_table.source_lang
-  local max_chars = config_table.max_chars or 8000
+  local max_chars = resolve_max_chars()
   if #text > max_chars then
     error(string.format("text too long (%d chars > %d)", #text, max_chars))
   end
+  local max_reply = max_chars * 4
   local payload = {
     text = text,
     target_lang = target_lang,
@@ -105,6 +232,10 @@ local function perform_translate(http_fn, text, opts)
   local cached = cache.get(config_table.cache, key)
   if cached then
     local cleaned_cached = util.normalize_newlines(cached)
+    -- The guard post-dates the cache, so an entry a runaway provider wrote
+    -- before it existed is on disk for the whole TTL. Refusing it here is what
+    -- keeps the hit path from replaying the fault the miss path now rejects.
+    refuse_oversize_reply(cleaned_cached, text, max_reply)
     if cleaned_cached ~= cached then
       cache.put(config_table.cache, key, cleaned_cached)
     end
@@ -113,6 +244,8 @@ local function perform_translate(http_fn, text, opts)
 
   local translated = registry.translate(provider_name, http_fn, payload)
   translated = util.normalize_newlines(translated)
+  -- Refuse before `cache.put`, or the fault outlives the call.
+  refuse_oversize_reply(translated, text, max_reply)
   cache.put(config_table.cache, key, translated)
   return translated, { cached = false, provider = provider_name, icon = provider_icon }
 end
@@ -150,8 +283,9 @@ end
 ---Each translated paragraph is re-wrapped to its source column budget (single-
 ---source-line paragraphs are kept on one line), raw passthrough lines are
 ---preserved, and comment leaders are reapplied per output line. On a paragraph
----count mismatch (a provider that reformatted the newlines) the whole
----translation is wrapped as a single block so output is never silently dropped.
+---count mismatch (a provider that reformatted the newlines) every reply
+---paragraph is wrapped in turn at the first paragraph slot, so output is never
+---silently dropped and no line reaches the buffer without its leader.
 ---@param translated string
 ---@param layout table
 ---@param parts MetaphrastCommentParts
@@ -166,8 +300,12 @@ local function assemble_comment_lines(translated, layout, parts)
   if #translated_paras ~= layout.para_count then
     -- A provider reformatted the paragraph newlines so we can no longer map
     -- each paragraph back. Preserve raw passthrough lines in place and emit the
-    -- whole translation as one wrapped block at the first paragraph slot, so no
-    -- content (translation or surrounding code) is ever silently dropped.
+    -- whole translation at the first paragraph slot, so no content (translation
+    -- or surrounding code) is ever silently dropped. Wrap the reply one
+    -- paragraph at a time rather than in one block: `textflow.wrap` treats a
+    -- newline as an ordinary break unit and hands it back inside a line, and
+    -- `try_apply` only discovers it after `comment.reapply` has run, so a
+    -- single-block wrap writes the split-off lines with no leader at all.
     local emitted = false
     for _, seg in ipairs(layout.segments) do
       if seg.kind == "raw" then
@@ -175,9 +313,11 @@ local function assemble_comment_lines(translated, layout, parts)
         out_info[#out_info + 1] = { indent = seg.indent, has_comment = seg.has_comment }
       elseif not emitted then
         emitted = true
-        for _, line in ipairs(textflow.wrap(translated, seg.width)) do
-          content_lines[#content_lines + 1] = line
-          out_info[#out_info + 1] = { indent = seg.indent, has_comment = true }
+        for _, para in ipairs(translated_paras) do
+          for _, line in ipairs(textflow.wrap(para, seg.width)) do
+            content_lines[#content_lines + 1] = line
+            out_info[#out_info + 1] = { indent = seg.indent, has_comment = true }
+          end
         end
       end
     end
@@ -302,8 +442,9 @@ end
 ---@param er integer 0-based last row.
 ---@param ec integer|nil
 ---@param lines string[] The translated input lines.
+---@param to_eol boolean|nil True when a blockwise block runs to every row's own end.
 ---@return MetaphrastHoverSource source
-local function capture_source(buffer, mode, sr, sc, er, ec, lines)
+local function capture_source(buffer, mode, sr, sc, er, ec, lines, to_eol)
   return {
     buf = buffer,
     win = window_for(buffer),
@@ -312,6 +453,7 @@ local function capture_source(buffer, mode, sr, sc, er, ec, lines)
     sc = sc,
     er = er,
     ec = ec,
+    to_eol = to_eol,
     commentstring = vim.bo[buffer] and vim.bo[buffer].commentstring or nil,
     lines = lines,
   }
@@ -332,6 +474,93 @@ local function present(source, result, show_opts)
   return ui.show(source, result, show_opts)
 end
 
+---Whether a blockwise selection was extended to every row's own end with `$`.
+---
+---The `'<`/`'>` marks cannot answer this on their own: a fixed-width block wider
+---than its end row clamps `'>` to that row's length exactly as `$` does, and
+---`curswant` — the one value that separates them — is not carried by the marks
+---and has already been reset by the time a `-range` command body runs. So the
+---selection is re-entered with `gv` and `winsaveview().curswant` is read, behind
+---a guard chain that falls back to the plain clamp (`false`) whenever any link
+---fails: the caller's mode is blockwise, the raw end-mark column reaches the end
+---row's length, the target buffer is current, the editor is in normal mode, `gv`
+---succeeds and restores blockwise, the restored region spans the same rows, and
+---`curswant` is `v:maxcol`.
+---
+---`ec` must be the *raw* `'>` column, read before this runs: `gv` normalises an
+---out-of-range end mark to the row end, exactly as Vim's own `check_cursor()`
+---does, so a value read afterwards would no longer be the caller's.
+---
+---The probe runs only for a `$` candidate — a block whose end mark already
+---reaches the end row's length. For those, its side effects are two
+---`ModeChanged` events (`n:\22` then `\22:n`) and a narrowed `'>`: the `<Esc>`
+---writes back the region `gv` restored, and `gv` clamped an out-of-range end
+---mark to the row end on the way in (measured `{0,2,41,0}` → `{0,2,7,0}`), so a
+---caller that set the mark past the row keeps the narrowed value. `winrestview`
+---restores the view, not the marks. Nothing else fires — no `CursorMoved`,
+---`WinScrolled` or `TextChanged` — so an open hover, which listens on
+---`CursorMoved`, `CursorMovedI`, `BufLeave`, `InsertEnter` and `BufWinLeave`,
+---cannot be closed by the probe. Every other selection skips it outright: a
+---fixed-width block on the end-mark guard, and the charwise and linewise paths
+---on the mode guard. The probe is also skipped, and the plain clamp used, when
+---the target buffer is not current or the editor is not exactly in normal mode;
+---the latter includes a `<Cmd>` mapping invoked straight from visual mode.
+---
+---Residual (risk R11): a caller that sets `'<`/`'>` programmatically with a raw
+---end column at or past the end row's byte length, in a buffer whose last real
+---visual selection was a `$` block, still resolves `true` here — `gv` reports
+---blockwise with a stale `curswant` and the remaining guards cannot separate it
+---from a genuine `$`. Its failure mode is a silent wrong write, not a refusal:
+---every row longer than the end row loses its tail. This is reachable through
+---the shipped command, not only through direct API calls: after one real
+---`<C-v>$` block in a buffer, another plugin or script that sets `'<`/`'>` with
+---the conventional `2147483647` end-of-line sentinel — a common idiom in text
+---object and operator plugins — followed by `:'<,'>MetaphrastTranslate`, lands
+---here with every guard satisfied. Rate it low-to-moderate likelihood rather
+---than programmatic-only. A row cross-check does not help — `gv` restores the
+---region from the marks, so the rows always agree.
+---@param bufnr integer
+---@param mode string Visual mode the caller resolved.
+---@param sr integer 0-indexed first row.
+---@param er integer 0-indexed last row.
+---@param ec integer 0-indexed raw `'>` column, before any clamping.
+---@param end_line string Text of the end row.
+---@return boolean to_eol
+local function block_is_to_eol(bufnr, mode, sr, er, ec, end_line)
+  if mode ~= "\22" and mode ~= "" then
+    return false
+  end
+  -- Hoisted out of the probe's own conjunction: both operands are read before
+  -- `gv` runs, so testing here is a pure short-circuit — the result is identical
+  -- on every input — and it keeps a block that stops inside the end row out of
+  -- visual mode altogether. A `$` leaves `'>` at exactly the end row's length;
+  -- anything shorter cannot have come from one.
+  if ec < #end_line then
+    return false
+  end
+  if vim.api.nvim_get_current_buf() ~= bufnr then
+    return false
+  end
+  if vim.fn.mode() ~= "n" then
+    return false
+  end
+  local view = vim.fn.winsaveview()
+  local to_eol = false
+  if pcall(vim.cmd, "normal! gv") and vim.fn.mode() == "\22" then
+    -- The row cross-check is defensive only: `gv` restores the region from the
+    -- marks, so today the rows always agree. It costs nothing and would catch a
+    -- future `gv` that restored the region from the stored selection instead.
+    local anchor, cursor = vim.fn.line("v"), vim.fn.line(".")
+    local rows_match = math.min(anchor, cursor) - 1 == sr and math.max(anchor, cursor) - 1 == er
+    to_eol = rows_match and vim.fn.winsaveview().curswant == vim.v.maxcol
+  end
+  if vim.fn.mode() ~= "n" then
+    vim.cmd("normal! \27")
+  end
+  vim.fn.winrestview(view)
+  return to_eol
+end
+
 ---Get visual selection positions from marks.
 ---@param bufnr integer
 ---@param mode string Visual mode character: "v", "V", or "\22" (blockwise).
@@ -339,6 +568,7 @@ end
 ---@return integer start_col 0-indexed
 ---@return integer end_row 0-indexed
 ---@return integer end_col 0-indexed (exclusive)
+---@return boolean to_eol True when a blockwise block was `$`-extended to every row's own end.
 local function get_visual_positions(bufnr, mode)
   local start_pos = vim.api.nvim_buf_get_mark(bufnr, "<")
   local end_pos = vim.api.nvim_buf_get_mark(bufnr, ">")
@@ -346,6 +576,7 @@ local function get_visual_positions(bufnr, mode)
   local sc = start_pos[2]
   local er = end_pos[1] - 1
   local ec = end_pos[2]
+  local to_eol = false
 
   if mode == "V" then
     sc = 0
@@ -357,6 +588,9 @@ local function get_visual_positions(bufnr, mode)
     -- the start and end rows would move the block's edges on all the others.
     -- End col from the mark is inclusive; make it exclusive and leave it raw.
     local end_line_text = vim.api.nvim_buf_get_lines(bufnr, er, er + 1, false)[1] or ""
+    -- Probed with the marks as read above and before `ec` is clamped, because
+    -- `gv` normalises an out-of-range end mark to the row end.
+    to_eol = block_is_to_eol(bufnr, mode, sr, er, ec, end_line_text)
     if ec >= #end_line_text then
       ec = #end_line_text
     else
@@ -381,7 +615,7 @@ local function get_visual_positions(bufnr, mode)
     end
   end
 
-  return sr, sc, er, ec
+  return sr, sc, er, ec, to_eol
 end
 
 ---Resolve a blockwise selection's columns against one row.
@@ -396,14 +630,20 @@ end
 ---would pull a codepoint back into the region and delete it from the row. A row
 ---with content has both ends widened, so a block over multibyte text never
 ---sends a split UTF-8 sequence to the provider nor writes one back.
+---
+---A `$`-extended block has no shared end column at all: every row runs to its
+---own end, which is what `to_eol` asks for. It replaces the clamp on `ec` and
+---nothing else — the emptiness test and both codepoint snaps still run, so a row
+---the start column already clamps to nothing stays empty.
 ---@param line string
 ---@param sc integer 0-indexed start col.
 ---@param ec integer 0-indexed end col (exclusive).
+---@param to_eol boolean|nil When true the block runs to this row's own end (`$`).
 ---@return integer cstart 0-indexed byte offset where the block starts.
 ---@return integer cend 0-indexed byte offset just past the block's last byte.
-local function block_columns(line, sc, ec)
+local function block_columns(line, sc, ec, to_eol)
   local cstart = math.min(sc, #line)
-  local cend = math.min(ec, #line)
+  local cend = to_eol and #line or math.min(ec, #line)
   -- Whether the row clamped to nothing is decided before either end moves:
   -- widening `cstart` back and `cend` forward pulls a whole codepoint into a
   -- region the clamp had just emptied, deleting it from the row.
@@ -429,8 +669,9 @@ end
 ---@param sc integer 0-indexed start col.
 ---@param er integer 0-indexed end row.
 ---@param ec integer 0-indexed end col (exclusive).
+---@param to_eol boolean|nil True when a blockwise block runs to every row's own end.
 ---@return string[] selected_lines
-local function extract_selection_lines(bufnr, mode, sr, sc, er, ec)
+local function extract_selection_lines(bufnr, mode, sr, sc, er, ec, to_eol)
   local lines = vim.api.nvim_buf_get_lines(bufnr, sr, er + 1, false)
   if #lines == 0 then
     return {}
@@ -444,7 +685,7 @@ local function extract_selection_lines(bufnr, mode, sr, sc, er, ec)
   if block then
     local parts = {}
     for _, line in ipairs(lines) do
-      local cstart, cend = block_columns(line, sc, ec)
+      local cstart, cend = block_columns(line, sc, ec, to_eol)
       table.insert(parts, line:sub(cstart + 1, cend))
     end
     return parts
@@ -479,7 +720,8 @@ end
 ---@param er integer 0-indexed end row.
 ---@param ec integer 0-indexed end col (exclusive).
 ---@param replacement string
-local function replace_selection_text(bufnr, mode, sr, sc, er, ec, replacement)
+---@param to_eol boolean|nil True when a blockwise block runs to every row's own end.
+local function replace_selection_text(bufnr, mode, sr, sc, er, ec, replacement, to_eol)
   local rep_lines = util.split_lines(replacement)
 
   if mode == "V" then
@@ -494,12 +736,12 @@ local function replace_selection_text(bufnr, mode, sr, sc, er, ec, replacement)
     -- Captured before the loop rewrites it, so the pad reflects the source row.
     local last_line = buf_lines[rows] or ""
     for i, line in ipairs(buf_lines) do
-      local cstart, cend = block_columns(line, sc, ec)
+      local cstart, cend = block_columns(line, sc, ec, to_eol)
       local rep = rep_lines[i] or ""
       buf_lines[i] = line:sub(1, cstart) .. rep .. line:sub(cend + 1)
     end
     if #rep_lines > rows then
-      local cstart = block_columns(last_line, sc, ec)
+      local cstart = block_columns(last_line, sc, ec, to_eol)
       local left = last_line:sub(1, cstart)
       local pad = left
       if left:match("%S") then
@@ -546,7 +788,7 @@ local function try_apply(source, translated)
   end
   local current
   if is_partial_selection(source) then
-    current = extract_selection_lines(buffer, source.mode, source.sr, source.sc, source.er, source.ec)
+    current = extract_selection_lines(buffer, source.mode, source.sr, source.sc, source.er, source.ec, source.to_eol)
   else
     current = vim.api.nvim_buf_get_lines(buffer, source.sr, source.er + 1, false)
   end
@@ -559,26 +801,26 @@ local function try_apply(source, translated)
   -- one, and the blockwise cap below has to count the lines that really land.
   local rendered = table.concat(out_lines, "\n")
   local flat_lines = util.split_lines(rendered)
+  -- Every write path inserts the rendered lines past the source's row count,
+  -- and that count comes from the provider's reply, so bound it here rather
+  -- than inside one selection shape: a runaway reply floods a linewise or
+  -- charwise write exactly as it floods a blockwise one. Refusing beats
+  -- truncating: no content is dropped without saying so.
+  local rendered_rows = #flat_lines
+  local rows = #source.lines
+  local limit = resolve_max_inserted_lines()
+  if rendered_rows - rows > limit then
+    return false,
+      string.format(
+        "metaphrast: translation rendered %d lines for %d source lines, over "
+          .. "max_inserted_lines (%d); translation not applied",
+        rendered_rows,
+        rows,
+        limit
+      )
+  end
   if is_partial_selection(source) then
-    if source.mode == "\22" or source.mode == "" then
-      -- A blockwise replacement inserts every rendered line past the block's
-      -- row count, and that count comes from the provider's reply, so bound it.
-      -- Refusing beats truncating: no content is dropped without saying so.
-      local rendered_rows = #flat_lines
-      local rows = #source.lines
-      local limit = M.config.max_inserted_lines or 200
-      if rendered_rows - rows > limit then
-        return false,
-          string.format(
-            "metaphrast: translation rendered %d lines for a %d-row block, over "
-              .. "max_inserted_lines (%d); translation not applied",
-            rendered_rows,
-            rows,
-            limit
-          )
-      end
-    end
-    replace_selection_text(buffer, source.mode, source.sr, source.sc, source.er, source.ec, rendered)
+    replace_selection_text(buffer, source.mode, source.sr, source.sc, source.er, source.ec, rendered, source.to_eol)
   else
     vim.api.nvim_buf_set_lines(buffer, source.sr, source.er + 1, false, flat_lines)
   end
@@ -676,9 +918,9 @@ local NOTHING_TO_TRANSLATE = "metaphrast: nothing to translate in the selection"
 ---@return string|nil reason Why nothing was written.
 function M.translate_selection(bufnr, mode, opts)
   local buffer = resolve_buffer(bufnr)
-  local sr, sc, er, ec = get_visual_positions(buffer, mode)
-  local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec)
-  local source = capture_source(buffer, mode, sr, sc, er, ec, selected_lines)
+  local sr, sc, er, ec, to_eol = get_visual_positions(buffer, mode)
+  local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec, to_eol)
+  local source = capture_source(buffer, mode, sr, sc, er, ec, selected_lines, to_eol)
   local analysis = analyze_lines(selected_lines, source.commentstring)
   -- A block clamped to nothing on every row leaves only newlines, which is not
   -- `""`; sending it would bill a provider for nothing and write the reply
@@ -701,9 +943,9 @@ end
 ---@param callbacks {on_success?:fun(result:string, meta:table, applied?:boolean, reason?:string), on_error?:fun(err:any)}|nil
 function M.translate_selection_async(bufnr, mode, opts, callbacks)
   local buffer = resolve_buffer(bufnr)
-  local sr, sc, er, ec = get_visual_positions(buffer, mode)
-  local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec)
-  local source = capture_source(buffer, mode, sr, sc, er, ec, selected_lines)
+  local sr, sc, er, ec, to_eol = get_visual_positions(buffer, mode)
+  local selected_lines = extract_selection_lines(buffer, mode, sr, sc, er, ec, to_eol)
+  local source = capture_source(buffer, mode, sr, sc, er, ec, selected_lines, to_eol)
   local analysis = analyze_lines(selected_lines, source.commentstring)
   local cb = callbacks or {}
   if analysis.text:match("^%s*$") then
@@ -957,6 +1199,12 @@ M._block_columns = block_columns
 function M._reset_for_tests()
   M.config = cfg.defaults()
   cfg._reset_for_tests()
+  warned_max_inserted_lines = false
+  warned_max_chars = false
+  http_builder._reset_for_tests()
+  -- The isolation boundary between specs: `register_builtin` no longer resets,
+  -- so a provider one spec registered would otherwise leak into the next.
+  registry.reset()
   register_builtin()
   M.http = http_builder.build(M.config.http)
   M.http_async = http_builder.build_async(M.config.http)

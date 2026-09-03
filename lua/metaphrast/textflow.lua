@@ -111,13 +111,17 @@ function M.wrap(text, width)
   width = math.max(1, math.floor(width or 80))
   local chars = vim.fn.split(text, "\\zs")
   local units = {}
-  local word = ""
+  -- Collect a word's characters in a table and concatenate once. Appending to
+  -- a string instead copies the whole word on every character, which is
+  -- quadratic in the word's length: a single 200 KB word cost 1155 ms that way
+  -- against 58 ms for prose of the same size.
+  local word = {}
   local space_before = false
 
   local function flush_word()
-    if word ~= "" then
-      units[#units + 1] = { text = word, space_before = space_before }
-      word = ""
+    if #word > 0 then
+      units[#units + 1] = { text = table.concat(word), space_before = space_before }
+      word = {}
       space_before = false
     end
   end
@@ -131,7 +135,7 @@ function M.wrap(text, width)
       units[#units + 1] = { text = ch, space_before = space_before }
       space_before = false
     else
-      word = word .. ch
+      word[#word + 1] = ch
     end
   end
   flush_word()

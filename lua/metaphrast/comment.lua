@@ -90,7 +90,7 @@ end
 ---@param translated string|string[]
 ---@param info MetaphrastCommentLineInfo[]|nil
 ---@param parts MetaphrastCommentParts|nil
----@return string[]
+---@return string[] lines A blank content line yields a bare leader, never one with a trailing space.
 function M.reapply(translated, info, parts)
   if not info or not parts then
     if type(translated) == "table" then
@@ -109,7 +109,17 @@ function M.reapply(translated, info, parts)
   for i, line in ipairs(lines) do
     local meta = info[i]
     if meta and meta.has_comment then
-      out[i] = (meta.indent or "") .. parts.prefix .. line .. parts.suffix
+      local out_line = (meta.indent or "") .. parts.prefix .. line .. parts.suffix
+      if line == "" then
+        -- The prefix's separating space has nothing to separate here, so it is
+        -- trailing whitespace the user never wrote and every trim-on-save
+        -- formatter reports as their diff. The `line == ""` guard is what makes
+        -- this safe: a translated line may legitimately end in a space the
+        -- provider chose, and a suffix-bearing commentstring (`/* %s */`) never
+        -- ends in whitespace of ours.
+        out_line = out_line:gsub("%s+$", "")
+      end
+      out[i] = out_line
     else
       out[i] = line
     end

@@ -77,7 +77,7 @@ require("metaphrast").setup({
       api_key = os.getenv("GOOGLE_TRANSLATE_KEY") or os.getenv("GOOGLE_API_KEY"),
       adc_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         or vim.fn.expand("~/.config/gcloud/application_default_credentials.json"),
-      gcp_project_id = "your-billing-or-quota-project", -- optional override for x-goog-user-project
+      gcp_project_id = os.getenv("GOOGLE_CLOUD_PROJECT"), -- optional: overrides the ADC quota project
     },
     google_llm = {
       -- Same ADC-first auth as `google`; falls back to an API key.
@@ -128,10 +128,16 @@ The current implementation is aimed at the authorized-user ADC file written by
 service-account JSON key, Metaphrast will reject it instead of silently
 falling back to the API key path.
 
-Set `providers.google.gcp_project_id` when you want to force a specific
-`x-goog-user-project` header. This value overrides any `quota_project_id`
-embedded in the ADC file and is useful when billing or quota should be charged
-to a different Google Cloud project.
+The project sent as `x-goog-user-project` is resolved from
+`providers.google.gcp_project_id`, `GOOGLE_CLOUD_PROJECT`/`GCLOUD_PROJECT`, or
+the ADC file's `quota_project_id`, in that order — the same order `google_llm`
+uses. Set `providers.google.gcp_project_id` to force one, or set it to the
+empty string to fall back to the ADC file's project when either environment
+variable is exported. Billing and quota are charged to whichever project wins.
+Whichever source it comes from, the id must look like one — letters, digits,
+`-`, `.` and `:`, starting with a letter or digit — because it is sent as a
+header value and, for `google_llm`, as part of the request URL; anything else
+is refused with the source named.
 
 The `google_llm` backend calls Cloud Translation's `general/translation-llm`
 model instead of the NMT model. With ADC it uses Advanced v3
@@ -145,7 +151,11 @@ The `location` must be one the Translation LLM supports — `us-central1` or
 `global` — and the request's parent location must match the location inside
 that model resource. Metaphrast builds both from `providers.google_llm.location`
 so they cannot drift; a mismatch is rejected by the API as HTTP 400
-INVALID_ARGUMENT.
+INVALID_ARGUMENT. The value must also look like a location id — letters, digits
+and `-` — because it becomes part of the request URL; anything else is refused
+before the request is built. The `translate-eu` and `translate-us` multi-regional
+endpoints serve the NMT model only, so they cannot be used for the Translation
+LLM.
 
 OpenRouter upstream model providers can rate-limit independently from your
 OpenRouter account. When `providers.openrouter.retry_on_upstream_rate_limit` is

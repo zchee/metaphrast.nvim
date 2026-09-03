@@ -80,7 +80,7 @@
 ---@field source_lang string|nil
 ---@field replace boolean
 ---@field max_chars integer
----@field max_inserted_lines integer Cap on lines a blockwise replace may add below the block.
+---@field max_inserted_lines integer Cap on lines any replace may add past the source's rows.
 ---@field cache MetaphrastCacheConfig
 ---@field http MetaphrastHttpConfig
 ---@field providers table<string, MetaphrastProviderConfig>
@@ -146,7 +146,7 @@ function M.defaults()
         api_key = vim.env.GOOGLE_TRANSLATE_KEY or vim.env.GOOGLE_API_KEY,
         adc_path = vim.env.GOOGLE_APPLICATION_CREDENTIALS
           or vim.fn.expand("~/.config/gcloud/application_default_credentials.json"),
-        gcp_project_id = nil,
+        gcp_project_id = vim.env.GOOGLE_CLOUD_PROJECT or vim.env.GCLOUD_PROJECT,
         model = "v2",
         base_url = "https://translation.googleapis.com/language/translate/v2",
         price_per_million_chars = 20.0,

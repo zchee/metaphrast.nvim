@@ -65,6 +65,51 @@ is `v1.0.0`.
 - A provider that fails validation now raises instead of silently rewriting the
   configured provider to `echo`. `setup()` keeps its own warn-and-fall-back to
   `echo` for the initial configuration.
+- `providers.google.gcp_project_id` now defaults to `GOOGLE_CLOUD_PROJECT` or
+  `GCLOUD_PROJECT`, as `google_llm` already did. **If you export either
+  variable, the `google` backend now sends `x-goog-user-project` with it, so
+  the project billed and charged for quota may change.** An explicit
+  `providers.google.gcp_project_id` still wins, and setting it to the empty
+  string still falls back to the ADC file's `quota_project_id`.
+- A Google Cloud project id is now checked before it is used, whichever source
+  it came from (`gcp_project_id`, `GOOGLE_CLOUD_PROJECT`/`GCLOUD_PROJECT`, or
+  the ADC file's `quota_project_id`). It travels unencoded into the
+  `x-goog-user-project` header and into `google_llm`'s request URL, so a value
+  containing CR/LF, whitespace, `/`, `?` or `#` would have injected a header or
+  re-targeted the request rather than named a project. Such a value is now
+  refused with the source named; legacy domain-scoped ids
+  (`example.com:project`) stay valid. The `google` backend now resolves the id
+  before it exchanges the ADC refresh token, so a rejected value costs no
+  request at all instead of one wasted OAuth round trip that also left an
+  unusable access token in the shared cache, and `google.validate` reports it,
+  so `setup()` warns and falls back to `echo` rather than accepting the
+  provider and failing at the first translation.
+- `providers.google_llm.location` is now checked the same way. It is another
+  segment of the same v3 URL the project id feeds, so a value containing `/`,
+  `?`, `#` or CR/LF would have re-targeted the request rather than named a
+  region — and `/../` is not cosmetic, because curl normalises it before
+  sending. Only letters, digits and `-` are accepted (`us-central1`, `global`,
+  `europe-west1`); anything else is refused before the request is built, and
+  `setup()` warns and falls back to `echo` instead of raising.
+- `setup()` no longer resets the provider registry, so a provider registered
+  through `register_provider()` survives it. A user registration wins over the
+  built-in of the same name in either order, and `setup()` names any built-in
+  it skipped at `debug`. `validate_provider` then validates the user's table,
+  and a provider without a `validate` function is accepted, so the fall-back to
+  `echo` does not fire for it.
+- A `max_inserted_lines` that is not a number is now ignored, with one warning
+  naming the value, and the default of 200 applies. It previously raised
+  `attempt to compare string with number` from the write path, so the caller
+  got a traceback instead of a refusal.
+- The same check now covers the value, not only the type, and `max_chars` gets
+  it too: both reject NaN and infinity (which silently removed the bound,
+  because every comparison against them is false), `max_inserted_lines` rejects
+  a negative value (which refused every write, including a reply that added no
+  rows) and `max_chars` a non-positive one, and each falls back to its default
+  with one warning naming the value. `setup()` re-arms both warnings, so a
+  second bad value in the same session is still reported. A cached reply larger
+  than four times `max_chars` is now refused on the cache hit as well, instead
+  of being replayed for the rest of its TTL.
 - Default `ui.win.padding` is now `{ top = 0, bottom = 0, left = 1, right = 1 }`
   (was `{ 0, 0, 0, 0 }`).
 - Default `ui.win.backdrop` is now `false` (was `40`).
