@@ -113,6 +113,22 @@ local function perform_translate(http_fn, text, opts)
 
   local translated = registry.translate(provider_name, http_fn, payload)
   translated = util.normalize_newlines(translated)
+  -- The request is already bounded by `max_chars`, so a reply orders of
+  -- magnitude larger is a provider fault rather than a translation, and every
+  -- downstream consumer (wrap, layout, the buffer write) pays for it. Refuse
+  -- before `cache.put`, or the fault outlives the call.
+  local max_reply = max_chars * 4
+  if #translated > max_reply then
+    error(
+      string.format(
+        "provider reply too long (%d chars for a %d-char request > %d); translation discarded",
+        #translated,
+        #text,
+        max_reply
+      ),
+      0
+    )
+  end
   cache.put(config_table.cache, key, translated)
   return translated, { cached = false, provider = provider_name, icon = provider_icon }
 end

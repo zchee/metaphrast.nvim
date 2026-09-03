@@ -128,4 +128,32 @@ describe("textflow.wrap", function()
   it("returns a single empty line for empty input", function()
     assert.same({ "" }, textflow.wrap("", 10))
   end)
+
+  it("AC-C2a: returns one unbroken line for a single enormous word", function()
+    local lines = textflow.wrap(string.rep("a", 200000), 80)
+    assert.equals(1, #lines)
+    assert.equals(200000, #lines[1])
+  end)
+
+  it("AC-C2b: wraps a single enormous word without a quadratic stall", function()
+    -- A character-at-a-time string accumulator reallocates the whole word on
+    -- every append, so one long word costs O(n^2) while prose of the same size
+    -- costs O(n). Timing alone cannot tell a slow runner from a wrong result,
+    -- so AC-C2a asserts the output and this asserts only the cost: an absolute
+    -- ceiling, plus a ratio against same-size prose measured in this process.
+    local word = string.rep("a", 200000)
+    local prose = string.rep("hello world ", 16000)
+
+    local t0 = vim.uv.hrtime()
+    textflow.wrap(prose, 80)
+    local prose_ms = (vim.uv.hrtime() - t0) / 1e6
+
+    t0 = vim.uv.hrtime()
+    textflow.wrap(word, 80)
+    local word_ms = (vim.uv.hrtime() - t0) / 1e6
+
+    local measured = string.format("word %.1f ms, prose %.1f ms", word_ms, prose_ms)
+    assert.is_true(word_ms < 400, "one 200000-char word took too long: " .. measured)
+    assert.is_true(word_ms < 5 * prose_ms, "one word costs more than 5x same-size prose: " .. measured)
+  end)
 end)

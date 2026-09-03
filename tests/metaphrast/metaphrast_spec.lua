@@ -130,6 +130,42 @@ describe("translation core", function()
     assert.equals(1, calls)
   end)
 
+  it("AC-C1: refuses a reply larger than four times max_chars", function()
+    local calls = 0
+    local reply_size = 32001
+    registry.register("flood_reply", {
+      translate = function()
+        calls = calls + 1
+        return string.rep("a", reply_size)
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metaphrast.config.provider = "flood_reply"
+    metaphrast.config.cache.ttl = 5
+    assert.equals(8000, metaphrast.config.max_chars)
+    local text = string.rep("q", 137)
+
+    local ok, err = pcall(metaphrast.translate, text, { target_lang = "fr" })
+
+    -- The request is bounded by `max_chars`, so a reply orders of magnitude
+    -- larger is a provider fault, not a translation. Refuse it before
+    -- `cache.put`, or the fault outlives the call, and name all three numbers
+    -- the user needs to tell a runaway provider from a raised limit.
+    assert.is_false(ok)
+    err = tostring(err)
+    assert.truthy(err:find("32001", 1, true), err)
+    assert.truthy(err:find("137", 1, true), err)
+    assert.truthy(err:find("32000", 1, true), err)
+
+    -- Reaching the provider a second time is what proves nothing was cached.
+    reply_size = 32000
+    local out = metaphrast.translate(text, { target_lang = "fr" })
+    assert.equals(32000, #out)
+    assert.equals(2, calls)
+  end)
+
   it("rejects calls that exceed cost guard", function()
     registry.register("expensive", {
       estimate_cost = function()
