@@ -2,14 +2,6 @@
 on: [push, pull_request]
 name: lint-test
 
-env:
-  # snacks.nvim is a hard runtime dependency and the test suite drives the real
-  # thing, so it is pinned: the window option surface is what the specs assert.
-  SNACKS_REF: 882c996cf28183f4d63640de0b4c02ec886d01f2
-  # plenary.nvim is the test runner and will be archived in Q2 2026, so an
-  # unpinned clone is a moving target; tests/minimal_init.lua reads this.
-  PLENARY_REF: 74b06c6c75e4eeb3108ec01852001636d85a932b
-
 jobs:
   stylua:
     name: stylua
@@ -46,14 +38,6 @@ jobs:
           neovim: true
           version: ${{ matrix.nvim-versions }}
 
-      - name: cache test dependencies
-        uses: actions/cache@v6
-        with:
-          path: |
-            ${{ runner.temp }}/plenary.nvim
-            ${{ runner.temp }}/snacks.nvim
-          key: nvim-deps-${{ matrix.os }}-plenary-${{ env.PLENARY_REF }}-snacks-${{ env.SNACKS_REF }}
-
       - name: run tests
         run: make test
         env:
@@ -71,14 +55,6 @@ jobs:
         with:
           neovim: true
           version: nightly
-
-      - name: cache test dependencies
-        uses: actions/cache@v6
-        with:
-          path: |
-            ${{ runner.temp }}/plenary.nvim
-            ${{ runner.temp }}/snacks.nvim
-          key: nvim-deps-ubuntu-26.04-plenary-${{ env.PLENARY_REF }}-snacks-${{ env.SNACKS_REF }}
 
       - name: clone render-markdown.nvim
         run: |
