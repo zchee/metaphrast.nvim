@@ -37,15 +37,15 @@ function M.translate(_http, payload)
     data = vim.json.encode(body),
   })
   if res.code ~= 0 then
-    error("openai translate failed: " .. (res.stderr or "curl error code " .. res.code))
+    error("openai translate failed: " .. (res.stderr or "curl error code " .. res.code), 0)
   end
   if res.http_status and res.http_status >= 400 then
-    error("openai translate failed (HTTP " .. res.http_status .. "): " .. (res.stdout or ""))
+    error("openai translate failed (HTTP " .. res.http_status .. "): " .. (res.stdout or ""), 0)
   end
   local parsed = vim.json.decode(res.stdout)
   local choice = parsed and parsed.choices and parsed.choices[1]
   if not choice or not choice.message or not choice.message.content then
-    error("openai translate returned unexpected payload")
+    error("openai translate returned unexpected payload", 0)
   end
   return choice.message.content
 end

@@ -1,4 +1,7 @@
 local config = require("metaphrast.config")
+local metaphrast = require("metaphrast")
+local registry = require("metaphrast.providers")
+local ui = require("metaphrast.ui")
 
 local deepl = require("metaphrast.providers.deepl")
 local echo = require("metaphrast.providers.echo")
@@ -1645,5 +1648,125 @@ describe("openrouter provider", function()
     assert.is_false(ok)
     assert.truthy(err:find("openrouter translate failed %(HTTP 401%)"))
     assert.same({ "deepseek/deepseek-v4-flash", "openrouter/auto" }, requested_models)
+  end)
+end)
+
+-- ── user-facing error messages ──────────────────────────────────────────
+
+---Every provider whose `validate` can fail, and the config that makes it fail.
+---`false` marks one whose `validate` never reports, so the sweep below skips it
+---instead of passing on an assertion it never reached. A provider added without
+---an entry here fails the sweep rather than going unchecked.
+---@type table<string, table|false>
+local VALIDATE_FAILURE_CASES = {
+  echo = false,
+  deepl = { api_key = "" },
+  gemini = { api_key = "" },
+  openai = { api_key = "" },
+  openrouter = { api_key = "" },
+  -- Both Google providers reach a resolver that raises rather than reports,
+  -- which is where the chunk position used to enter the message.
+  google = { api_key = "", gcp_project_id = "bad/x" },
+  google_llm = { api_key = "k", location = "bad/x" },
+}
+
+describe("provider error messages", function()
+  local real_notify = ui.notify
+  local adc_path
+  local recorded
+
+  before_each(function()
+    metaphrast._reset_for_tests()
+    google._reset_for_tests()
+    google_llm._reset_for_tests()
+    -- Never the developer's real ADC file: written only by the sweep, which
+    -- needs the ADC branch to reach the resolver that raises.
+    adc_path = vim.fn.tempname()
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
+    recorded = {}
+    ui.notify = function(msg, level)
+      table.insert(recorded, { msg = msg, level = level })
+    end
+  end)
+
+  after_each(function()
+    ui.notify = real_notify
+    metaphrast._reset_for_tests()
+    google._reset_for_tests()
+    google_llm._reset_for_tests()
+    vim.env.GOOGLE_CLOUD_PROJECT = nil
+    vim.env.GCLOUD_PROJECT = nil
+    if adc_path and vim.uv.fs_stat(adc_path) then
+      vim.fn.delete(adc_path)
+    end
+  end)
+
+  it("keeps the chunk position out of the setup() fallback warning", function()
+    metaphrast.setup({
+      provider = "google_llm",
+      providers = {
+        google_llm = { adc_path = adc_path, api_key = "k", location = "bad/x", gcp_project_id = "p" },
+      },
+    })
+
+    assert.equals(1, #recorded)
+    assert.equals("warn", recorded[1].level)
+    assert.same(
+      'metaphrast: google_llm provider: location is not a usable location id: "bad/x"; falling back to echo provider',
+      recorded[1].msg
+    )
+    assert.is_nil(recorded[1].msg:match("%.lua:%d+:"))
+    assert.equals("echo", metaphrast.config.provider)
+  end)
+
+  it("keeps the chunk position out of a provider transport failure", function()
+    metaphrast.setup({
+      provider = "google",
+      providers = { google = { adc_path = adc_path, api_key = "k" } },
+    })
+    metaphrast.http = function()
+      return { code = 7, stderr = "boom" }
+    end
+
+    local ok, err = pcall(metaphrast.translate, "hello")
+
+    assert.is_false(ok)
+    assert.equals("google translate failed: boom", err)
+    assert.is_nil(err:match("%.lua:%d+:"))
+  end)
+
+  it("keeps the chunk position out of every provider's validate failure", function()
+    vim.fn.writefile({
+      vim.json.encode({
+        type = "authorized_user",
+        client_id = "cid",
+        client_secret = "secret",
+        refresh_token = "refresh",
+      }),
+    }, adc_path)
+
+    local covered = {}
+    for _, name in ipairs(registry.names()) do
+      local provider = registry.get(name)
+      if provider.validate then
+        local case = VALIDATE_FAILURE_CASES[name]
+        assert.is_not_nil(case, name .. " has validate() but no case in VALIDATE_FAILURE_CASES")
+        if case then
+          local called, result, err = pcall(provider.validate, vim.tbl_extend("force", { adc_path = adc_path }, case))
+          local message
+          if called then
+            assert.is_false(result, name .. " validate() accepted its failure case")
+            message = tostring(err)
+          else
+            message = tostring(result)
+          end
+          assert.is_nil(message:match("%.lua:%d+:"), name .. " leaks a chunk position: " .. message)
+          table.insert(covered, name)
+        end
+      end
+    end
+
+    assert.same({ "deepl", "gemini", "google", "google_llm", "openai", "openrouter" }, covered)
   end)
 end)

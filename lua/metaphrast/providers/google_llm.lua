@@ -36,7 +36,7 @@ local function resolve_location(cfg)
     return DEFAULT_LOCATION
   end
   if not location:match(LOCATION_PATTERN) then
-    error(string.format("%s provider: location is not a usable location id: %s", M.name, vim.inspect(location)))
+    error(string.format("%s provider: location is not a usable location id: %s", M.name, vim.inspect(location)), 0)
   end
   return location
 end
@@ -104,7 +104,7 @@ function M.translate(_http, payload)
     local credentials = gcp_auth.load_adc_credentials(cfg.adc_path, M.name)
     local project_id = gcp_auth.resolve_project_id(cfg, credentials, M.name)
     if not project_id then
-      error("google_llm provider requires gcp_project_id (or an ADC quota_project_id)")
+      error("google_llm provider requires gcp_project_id (or an ADC quota_project_id)", 0)
     end
     local access_token = gcp_auth.refresh_access_token(_http, cfg.adc_path, M.name)
     url = string.format("%s/projects/%s/locations/%s:translateText", cfg.base_url, project_id, location)
@@ -124,11 +124,11 @@ function M.translate(_http, payload)
     end
   else
     if not cfg.api_key or cfg.api_key == "" then
-      error("google_llm provider requires api_key or ADC credentials")
+      error("google_llm provider requires api_key or ADC credentials", 0)
     end
     local project_id = gcp_auth.resolve_project_id(cfg, nil, M.name)
     if not project_id then
-      error("google_llm provider requires gcp_project_id (or an ADC quota_project_id)")
+      error("google_llm provider requires gcp_project_id (or an ADC quota_project_id)", 0)
     end
     url = cfg.basic_base_url .. "?key=" .. cfg.api_key
     headers = { "Content-Type: application/json; charset=utf-8" }
@@ -148,17 +148,17 @@ function M.translate(_http, payload)
     data = vim.json.encode(body),
   })
   if res.code ~= 0 then
-    error("google_llm translate failed: " .. (res.stderr or "curl error code " .. res.code))
+    error("google_llm translate failed: " .. (res.stderr or "curl error code " .. res.code), 0)
   end
   if res.http_status and res.http_status >= 400 then
     local message = "google_llm translate failed (HTTP " .. res.http_status .. "): " .. (res.stdout or "")
     local hint = res.http_status == 403 and gcp_auth.blocked_method_hint(res.stdout) or nil
-    error(message .. (hint or ""))
+    error(message .. (hint or ""), 0)
   end
 
   local ok, parsed = pcall(vim.json.decode, res.stdout)
   if not ok then
-    error("google_llm translate returned invalid JSON")
+    error("google_llm translate returned invalid JSON", 0)
   end
   local translations
   if use_adc then
@@ -167,7 +167,7 @@ function M.translate(_http, payload)
     translations = parsed and parsed.data and parsed.data.translations
   end
   if not translations or not translations[1] or not translations[1].translatedText then
-    error("google_llm translate returned unexpected payload")
+    error("google_llm translate returned unexpected payload", 0)
   end
   return translations[1].translatedText
 end
