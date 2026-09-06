@@ -27,7 +27,7 @@ local function resolve_google_auth(cfg, _http)
     return cfg.base_url, headers
   end
   if not cfg.api_key or cfg.api_key == "" then
-    error("google provider requires api_key or ADC credentials")
+    error("google provider requires api_key or ADC credentials", 0)
   end
   return cfg.base_url .. "?key=" .. cfg.api_key, {
     "Content-Type: application/json",
@@ -83,17 +83,17 @@ function M.translate(_http, payload)
     data = vim.json.encode(body),
   })
   if res.code ~= 0 then
-    error("google translate failed: " .. (res.stderr or "curl error code " .. res.code))
+    error("google translate failed: " .. (res.stderr or "curl error code " .. res.code), 0)
   end
   if res.http_status and res.http_status >= 400 then
     local message = "google translate failed (HTTP " .. res.http_status .. "): " .. (res.stdout or "")
     local hint = res.http_status == 403 and gcp_auth.blocked_method_hint(res.stdout) or nil
-    error(message .. (hint or ""))
+    error(message .. (hint or ""), 0)
   end
   local parsed = vim.json.decode(res.stdout)
   local translations = parsed and parsed.data and parsed.data.translations
   if not translations or not translations[1] or not translations[1].translatedText then
-    error("google translate returned unexpected payload")
+    error("google translate returned unexpected payload", 0)
   end
   return translations[1].translatedText
 end

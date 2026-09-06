@@ -40,15 +40,15 @@ function M.translate(_http, payload)
     data = vim.json.encode(body),
   })
   if res.code ~= 0 then
-    error("gemini translate failed: " .. (res.stderr or "curl error code " .. res.code))
+    error("gemini translate failed: " .. (res.stderr or "curl error code " .. res.code), 0)
   end
   if res.http_status and res.http_status >= 400 then
-    error("gemini translate failed (HTTP " .. res.http_status .. "): " .. (res.stdout or ""))
+    error("gemini translate failed (HTTP " .. res.http_status .. "): " .. (res.stdout or ""), 0)
   end
   local parsed = vim.json.decode(res.stdout)
   local candidates = parsed and parsed.candidates
   if not candidates or not candidates[1] or not candidates[1].content or not candidates[1].content.parts then
-    error("gemini translate returned unexpected payload")
+    error("gemini translate returned unexpected payload", 0)
   end
   return candidates[1].content.parts[1].text
 end

@@ -30,18 +30,18 @@ function M.load_adc_credentials(path, provider)
   local label = provider or "google"
   local ok, lines = pcall(vim.fn.readfile, path)
   if not ok then
-    error(label .. " ADC credentials could not be read: " .. path)
+    error(label .. " ADC credentials could not be read: " .. path, 0)
   end
   local raw = table.concat(lines, "\n")
   local decoded_ok, credentials = pcall(vim.json.decode, raw)
   if not decoded_ok or type(credentials) ~= "table" then
-    error(label .. " ADC credentials are not valid JSON: " .. path)
+    error(label .. " ADC credentials are not valid JSON: " .. path, 0)
   end
   if credentials.type ~= "authorized_user" then
-    error(label .. " ADC credentials have unsupported type: " .. tostring(credentials.type))
+    error(label .. " ADC credentials have unsupported type: " .. tostring(credentials.type), 0)
   end
   if not credentials.client_id or not credentials.client_secret or not credentials.refresh_token then
-    error(label .. " ADC credentials are missing required authorized_user fields")
+    error(label .. " ADC credentials are missing required authorized_user fields", 0)
   end
   return credentials
 end
@@ -71,15 +71,15 @@ function M.refresh_access_token(_http, adc_path, provider)
     data = body,
   })
   if res.code ~= 0 then
-    error(label .. " ADC token refresh failed: " .. (res.stderr or "curl error code " .. res.code))
+    error(label .. " ADC token refresh failed: " .. (res.stderr or "curl error code " .. res.code), 0)
   end
   if res.http_status and res.http_status >= 400 then
-    error(label .. " ADC token refresh failed (HTTP " .. res.http_status .. "): " .. (res.stdout or ""))
+    error(label .. " ADC token refresh failed (HTTP " .. res.http_status .. "): " .. (res.stdout or ""), 0)
   end
 
   local parsed = vim.json.decode(res.stdout)
   if not parsed or not parsed.access_token then
-    error(label .. " ADC token refresh returned unexpected payload")
+    error(label .. " ADC token refresh returned unexpected payload", 0)
   end
 
   token_cache.access_token = parsed.access_token
@@ -140,7 +140,8 @@ function M.resolve_project_id(cfg, credentials, provider)
         provider or "google",
         source,
         vim.inspect(project_id)
-      )
+      ),
+      0
     )
   end
   return project_id

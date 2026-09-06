@@ -36,7 +36,7 @@ function M.translate(name, http, payload)
     local provider_cfg = (payload.config and payload.config.providers and payload.config.providers[name]) or {}
     local ok, err = provider.validate(provider_cfg)
     if not ok then
-      error(err)
+      error(err, 0)
     end
   end
   return provider.translate(http, payload)

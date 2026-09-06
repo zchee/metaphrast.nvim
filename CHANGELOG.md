@@ -128,6 +128,11 @@ Users who set any of these keys explicitly are unaffected.
 
 ### Fixed
 
+- Provider errors no longer carry the Lua chunk position. Every
+  user-facing `error()` under `lua/metaphrast/providers/` now raises at
+  level 0, so the `setup()` fallback warning and the translation failure
+  toasts read `google translate failed: ...` rather than
+  `./lua/metaphrast/providers/google.lua:86: google translate failed: ...`.
 - Blockwise (`<C-v>`) replacements no longer drop content. A block over the
   comment column merges into one paragraph and can re-wrap to more lines than
   the block has rows; those surplus lines were written past the end of the loop

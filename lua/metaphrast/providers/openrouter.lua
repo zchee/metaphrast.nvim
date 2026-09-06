@@ -110,7 +110,7 @@ local function decode_translation(res)
   local parsed = vim.json.decode(res.stdout)
   local choice = parsed and parsed.choices and parsed.choices[1]
   if not choice or not choice.message or not choice.message.content then
-    error("openrouter translate returned unexpected payload")
+    error("openrouter translate returned unexpected payload", 0)
   end
   return choice.message.content
 end
@@ -128,19 +128,19 @@ function M.translate(_http, payload)
   for index, model in ipairs(attempts) do
     local res = request_translation(_http, cfg, payload, headers, model)
     if res.code ~= 0 then
-      error("openrouter translate failed: " .. (res.stderr or "curl error code " .. res.code))
+      error("openrouter translate failed: " .. (res.stderr or "curl error code " .. res.code), 0)
     end
     if res.http_status and res.http_status >= 400 then
       local message = format_http_error(res)
       if not (res.http_status == 429 and is_upstream_rate_limit(res.stdout) and index < #attempts) then
-        error(message)
+        error(message, 0)
       end
     else
       return decode_translation(res)
     end
   end
 
-  error("openrouter translate failed")
+  error("openrouter translate failed", 0)
 end
 
 function M.estimate_cost(payload)
