@@ -118,6 +118,20 @@ is `v1.0.0`.
 
 Users who set any of these keys explicitly are unaffected.
 
+- `textflow.wrap` applies 行頭禁則: no wrapped line opens with `。、，．・：；？！`, a
+  closing bracket (`）」』】…`) or a closing quote, so a Japanese translation no
+  longer leaves a full stop stranded at the head of a line. The break moves
+  back over the run instead, letting those characters ride on the line before
+  it (追い出し) -- hanging them past the last column was the alternative, but
+  every caller wraps to a width it must not exceed (the hover to the columns
+  the window has, the comment write-back to the source's budget), so the break
+  moves rather than the margin. Two cases keep the plain break: nothing can
+  stay behind (the run reaches the line's first unit), and what would move does
+  not fit on one line, where shortening the line would buy nothing. The
+  strict-mode-only characters (`ー`, small kana, iteration marks) stay
+  breakable, matching CSS `line-break: normal`. `textflow.is_no_line_start()`
+  exposes the predicate.
+
 ### Removed
 
 - The `vim.notify` / `nvim_echo` / `vim.ui.input` fallbacks used when snacks.nvim

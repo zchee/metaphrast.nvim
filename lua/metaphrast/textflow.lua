@@ -23,6 +23,37 @@ function M.is_list_marker(s)
   return false
 end
 
+-- Characters that may not open a line (行頭禁則). Closing brackets, closing
+-- quotes and the punctuation that binds to the text before it: Unicode line
+-- break classes CL, CP, EX and IS, which every mode of CSS `line-break`
+-- prohibits at a line start. The strict-mode extras are deliberately absent —
+-- small kana (っゃゅょ…), the prolonged sound mark ー and the iteration marks
+-- (々ゝヽ) are breakable under `line-break: normal`, and forcing them onto the
+-- previous line only buys shorter lines.
+local NO_LINE_START = {}
+for _, ch in
+  ipairs(
+    vim.fn.split(
+      "、。，．・：；？！‼⁇⁈⁉゛゜)]}）］｝〕〉》」』】〗〙〟｠｣”’,.:;?!",
+      "\\zs"
+    )
+  )
+do
+  NO_LINE_START[ch] = true
+end
+
+---Reports whether `s` starts with a character that may not open a line.
+---Matched on the first character, so a Latin break unit is judged by the
+---punctuation it leads with and a wide character by itself.
+---@param s string
+---@return boolean
+function M.is_no_line_start(s)
+  if s == "" then
+    return false
+  end
+  return NO_LINE_START[vim.fn.strcharpart(s, 0, 1)] == true
+end
+
 ---@class MetaphrastFlowSegment
 ---@field kind "para"|"raw"
 ---@field text string|nil Paragraph content with intra-paragraph newlines collapsed to spaces.
@@ -104,6 +135,16 @@ end
 ---boundaries since they carry no inter-word spaces. Widths are measured with
 ---`strdisplaywidth` so double-width glyphs occupy two columns. Original spacing
 ---between break units is preserved; runs of whitespace collapse to one space.
+---
+---A line never opens with a 行頭禁則 character (`is_no_line_start`): the break
+---moves back over the offending run so those characters ride on the line
+---before it (追い出し). Hanging them past the last column would have been the
+---other way out, but every caller wraps to a width it must not exceed — the
+---hover to the columns the window has, the comment write-back to the source's
+---budget — so the break moves instead of the margin. That is only possible
+---while a unit is left behind: when the run reaches back to the line's first
+---unit, the plain break stands and the line does open with it, which is the
+---best the width allows.
 ---@param text string
 ---@param width integer
 ---@return string[]
@@ -144,22 +185,69 @@ function M.wrap(text, width)
     return { "" }
   end
 
-  local lines = {}
-  local line = ""
-  local line_w = 0
-  for _, unit in ipairs(units) do
-    local uw = display_width(unit.text)
-    local sep = (line_w > 0 and unit.space_before) and 1 or 0
-    if line_w > 0 and line_w + sep + uw > width then
-      lines[#lines + 1] = line
-      line = unit.text
-      line_w = uw
-    else
-      line = line .. (sep == 1 and " " or "") .. unit.text
-      line_w = line_w + sep + uw
+  ---Concatenate `units[from..to]`, restoring one space where one was dropped.
+  ---@param from integer
+  ---@param to integer
+  ---@return string
+  local function join(from, to)
+    local parts = {}
+    for i = from, to do
+      if i > from and units[i].space_before then
+        parts[#parts + 1] = " "
+      end
+      parts[#parts + 1] = units[i].text
     end
+    return table.concat(parts)
   end
-  lines[#lines + 1] = line
+
+  ---Display width of `units[from..to]` as one line.
+  ---@param from integer
+  ---@param to integer
+  ---@return integer
+  local function span_width(from, to)
+    local w = 0
+    for i = from, to do
+      w = w + ((i > from and units[i].space_before) and 1 or 0) + display_width(units[i].text)
+    end
+    return w
+  end
+
+  local lines = {}
+  local start = 1
+  while start <= #units do
+    -- Greedy fill: the last unit that still fits, and always at least one, so
+    -- a unit wider than the whole width lands alone rather than never.
+    local stop = start
+    local line_w = display_width(units[start].text)
+    for i = start + 1, #units do
+      local sep = units[i].space_before and 1 or 0
+      local uw = display_width(units[i].text)
+      if line_w + sep + uw > width then
+        break
+      end
+      line_w = line_w + sep + uw
+      stop = i
+    end
+    if stop < #units and M.is_no_line_start(units[stop + 1].text) then
+      -- `run_end` is the last unit that may not open a line, `k` the last one
+      -- that can stay behind. Moving [k+1, run_end] down only helps while it
+      -- fits on one line: otherwise the next line breaks inside the run and
+      -- opens with it anyway, and this line was shortened for nothing.
+      local run_end = stop + 1
+      while run_end < #units and M.is_no_line_start(units[run_end + 1].text) do
+        run_end = run_end + 1
+      end
+      local k = stop
+      while k > start and M.is_no_line_start(units[k + 1].text) do
+        k = k - 1
+      end
+      if k > start and span_width(k + 1, run_end) <= width then
+        stop = k
+      end
+    end
+    lines[#lines + 1] = join(start, stop)
+    start = stop + 1
+  end
   return lines
 end
 

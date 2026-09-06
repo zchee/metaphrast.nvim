@@ -90,6 +90,33 @@ describe("textflow.segment", function()
   end)
 end)
 
+describe("textflow.is_no_line_start", function()
+  it("matches closing punctuation and brackets", function()
+    for _, ch in ipairs({ "。", "、", "）", "」", "！", "：", ")", "." }) do
+      assert.is_true(textflow.is_no_line_start(ch), ch)
+    end
+  end)
+
+  it("judges a break unit by its first character", function()
+    assert.is_true(textflow.is_no_line_start("」という"))
+    assert.is_false(textflow.is_no_line_start("という」"))
+  end)
+
+  it("leaves the strict-mode-only characters breakable", function()
+    -- `line-break: normal` allows a line to open with these; forcing them onto
+    -- the previous line only buys shorter lines.
+    for _, ch in ipairs({ "ー", "っ", "ゃ", "々", "ゝ" }) do
+      assert.is_false(textflow.is_no_line_start(ch), ch)
+    end
+  end)
+
+  it("reports false for ordinary text and for nothing", function()
+    assert.is_false(textflow.is_no_line_start("あ"))
+    assert.is_false(textflow.is_no_line_start("word"))
+    assert.is_false(textflow.is_no_line_start(""))
+  end)
+end)
+
 describe("textflow.wrap", function()
   it("wraps latin words on whitespace within the target width", function()
     local lines = textflow.wrap("the quick brown fox jumps", 10)
@@ -118,6 +145,44 @@ describe("textflow.wrap", function()
     assert.truthy(rejoined:find("JSON", 1, true))
     assert.truthy(rejoined:find("埋め込み", 1, true))
     assert.truthy(rejoined:find("works", 1, true))
+  end)
+
+  it("never opens a line with a full stop", function()
+    -- The greedy fill would break right before 。, so the break moves back one
+    -- character and 。 rides on the line before it (追い出し).
+    assert.same({ "あい", "う。え", "お" }, textflow.wrap("あいう。えお", 6))
+  end)
+
+  it("moves a run of no-start characters down together", function()
+    assert.same({ "あい", "う。」", "えお" }, textflow.wrap("あいう。」えお", 6))
+  end)
+
+  it("keeps a closing bracket off the line head", function()
+    assert.same({ "テス", "ト」あ", "い" }, textflow.wrap("テスト」あい", 6))
+  end)
+
+  it("accepts the plain break when no unit can stay behind", function()
+    -- Two columns leave the line a single character, so pulling 。 up would
+    -- empty it. The break stands instead of dropping content or looping.
+    assert.same({ "あ", "。", "い" }, textflow.wrap("あ。い", 2))
+  end)
+
+  it("keeps the fill when what would move cannot fit on one line", function()
+    -- "the .gitignore" needs 14 columns, so the next line would break inside
+    -- the run and open with it anyway: the greedy break stays.
+    assert.same({ "see the", ".gitignore" }, textflow.wrap("see the .gitignore", 12))
+  end)
+
+  it("honors the line-head rule without exceeding the width", function()
+    local text =
+      "**本書は参考用の機能一覧であり、ロードマップではありません。**次の段落へ続きます。"
+    local lines = textflow.wrap(text, 20)
+
+    for _, line in ipairs(lines) do
+      assert.is_true(vim.fn.strdisplaywidth(line) <= 20, "line exceeds width: " .. line)
+      assert.is_false(textflow.is_no_line_start(line), "line opens with a kinsoku character: " .. line)
+    end
+    assert.equals(text, table.concat(lines, ""))
   end)
 
   it("keeps an over-wide unit on its own line instead of dropping it", function()

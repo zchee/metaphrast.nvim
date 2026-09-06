@@ -4,6 +4,7 @@ end
 
 local config = require("metaphrast.config")
 local hover = require("metaphrast.ui.hover")
+local textflow = require("metaphrast.textflow")
 local theme = require("metaphrast.ui.theme")
 
 -- The user's real config table (acceptance 10 fixture).
@@ -936,6 +937,9 @@ describe("hover integration", function()
         vim.fn.strdisplaywidth(line) <= state.geometry.wrap_width,
         string.format("%d > %d: %s", vim.fn.strdisplaywidth(line), state.geometry.wrap_width, line)
       )
+    end
+    for _, line in ipairs(shown) do
+      assert.is_false(textflow.is_no_line_start(line), "line opens with a kinsoku character: " .. line)
     end
     -- Wrapping only moves break points: no character of the reply is dropped.
     assert.equals((ja:gsub("%s+", "")), (table.concat(shown, ""):gsub("%s+", "")))

@@ -229,6 +229,15 @@ whitespace, so a line never runs past the border and `wo.wrap = false` has
 nothing to clip. A ratio `width`/`max_width` follows the screen, so the text is
 re-wrapped when the editor is resized.
 
+No line opens with a character that may not start one (行頭禁則) — `。、，．・：；？！`,
+closing brackets such as `）」』】`, and the closing quotes. The break moves back
+instead, so those characters ride on the line before it (追い出し) rather than
+hanging past the last column, which would defeat the width the wrap has to
+respect. When only one break unit precedes the run there is nothing to leave
+behind and the plain break stands. Breaking before the strict-mode-only
+characters (`ー`, the small kana, the iteration marks) is left alone. The same
+rule applies to comment write-back, which wraps to the source's own width.
+
 `row` and `col` are offsets from the anchor line. When the hover opens above the
 range they are mirrored, so `row = 1` keeps one row of distance on whichever side
 the window lands.
