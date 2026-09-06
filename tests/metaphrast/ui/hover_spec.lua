@@ -253,6 +253,70 @@ describe("hover.estimate_height", function()
   end)
 end)
 
+describe("hover.text_budget", function()
+  it("takes the configured width minus the horizontal padding", function()
+    assert.equals(140, hover.text_budget(win_cfg({ width = 150, padding = { left = 5, right = 5 } }), 200, 2))
+  end)
+
+  it("resolves a ratio max_width against the screen", function()
+    assert.equals(46, hover.text_budget(win_cfg({ max_width = 0.6 }), 80, 2))
+  end)
+
+  it("caps the budget at the screen the border leaves", function()
+    assert.equals(76, hover.text_budget(win_cfg({ width = 300 }), 80, 2))
+  end)
+
+  it("falls back to the whole screen without a width or max_width", function()
+    local cfg = win_cfg()
+    cfg.max_width = nil
+    assert.equals(76, hover.text_budget(cfg, 80, 2))
+  end)
+
+  it("never drops below one column", function()
+    assert.equals(1, hover.text_budget(win_cfg({ width = 2, padding = { left = 5, right = 5 } }), 80, 2))
+  end)
+
+  it("stays within the columns compute_geometry leaves to text", function()
+    local cfg = win_cfg({ width = 150, padding = { left = 5, right = 5 } })
+    local budget = hover.text_budget(cfg, 200, 2)
+    local g = hover.compute_geometry({ string.rep("x", budget) }, cfg, ctx({ columns = 200 }))
+
+    assert.is_true(budget <= g.wrap_width, budget .. " > " .. g.wrap_width)
+  end)
+end)
+
+describe("hover.wrap_display", function()
+  local CJK = "本書は参考用の機能一覧であり、ロードマップではありません。"
+
+  it("keeps a line that already fits byte for byte", function()
+    assert.same({ "short line" }, hover.wrap_display({ "short line" }, 20))
+  end)
+
+  it("wraps an over-wide CJK line inside the budget", function()
+    local out = hover.wrap_display({ CJK }, 20)
+
+    assert.is_true(#out > 1)
+    for _, line in ipairs(out) do
+      assert.is_true(vim.fn.strdisplaywidth(line) <= 20, line)
+    end
+    assert.equals(CJK, table.concat(out, ""))
+  end)
+
+  it("repeats the leading indent on every continuation", function()
+    local out = hover.wrap_display({ "  - " .. CJK }, 20)
+
+    assert.is_true(#out > 1)
+    for _, line in ipairs(out) do
+      assert.equals("  ", line:sub(1, 2))
+      assert.is_true(vim.fn.strdisplaywidth(line) <= 20, line)
+    end
+  end)
+
+  it("wraps nothing without a budget", function()
+    assert.same({ CJK }, hover.wrap_display({ CJK }, nil))
+  end)
+end)
+
 describe("hover.build_lines", function()
   local result = {
     translated = "one\ntwo",
@@ -318,6 +382,36 @@ describe("hover.build_lines", function()
       assert.is_nil(line:match("^%s"), "padding leaked into the buffer text")
     end
     vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("wraps the translation to the budget and leaves the original verbatim", function()
+    local long = string.rep("あ", 40)
+    local content = hover.build_lines(
+      { translated = long, display_lines = { long } },
+      source,
+      true,
+      { left = 1, right = 1 },
+      20
+    )
+
+    assert.same({ "alpha", "beta", "gamma" }, { content.lines[1], content.lines[2], content.lines[3] })
+    assert.is_true(#content.lines > 4, vim.inspect(content.lines))
+    for i = 4, #content.lines do
+      assert.is_true(vim.fn.strdisplaywidth(content.lines[i]) <= 20, content.lines[i])
+    end
+    assert.equals(long, table.concat(content.lines, "", 4))
+  end)
+
+  it("reads the translation, not the source-shaped display lines", function()
+    local content = hover.build_lines({ translated = "alpha beta", display_lines = { "alpha", "beta" } }, nil, false)
+
+    assert.same({ "alpha beta" }, content.lines)
+  end)
+
+  it("drops a trailing newline a provider appended", function()
+    local content = hover.build_lines({ translated = "one\ntwo\n", display_lines = {} }, nil, false)
+
+    assert.same({ "one", "two" }, content.lines)
   end)
 
   it("falls back to one empty line for an empty result", function()
@@ -793,6 +887,69 @@ describe("hover integration", function()
     assert.equals(2, #vim.api.nvim_buf_get_extmarks(state.buf, theme.ns_layout, 0, -1, {}))
     assert.equals(0, #vim.api.nvim_buf_get_extmarks(state.buf, theme.ns_hl, 0, -1, {}))
     assert.equals(3, vim.api.nvim_win_get_height(state.win))
+  end)
+
+  ---Open a hover over prose with no comment structure whose reply is one long
+  ---CJK paragraph: the shape that used to run past the right border.
+  ---@param win table|nil `ui.win` overrides.
+  ---@return string translated, string[] shown
+  local function open_cjk_paragraph(win)
+    local ja = "**本書は参考用の機能一覧であり、ロードマップではありません。"
+      .. "ここに記載されたすべての機能が移植されるわけではありません。** ganja の目的は "
+      .. "opencode v1.18.22 との動作上の同等性を確保することにあります。一方、Claude Code は独立した製品であり、"
+      .. "ここでは比較目的でのみ取り上げています。"
+    metaphrast._reset_for_tests()
+    metaphrast.setup({ provider = "echo", ui = { win = win or {} } })
+    metaphrast.register_provider("canned_ja", {
+      translate = function()
+        return ja
+      end,
+    })
+    metaphrast.config.provider = "canned_ja"
+    vim.o.columns = 200
+    local bufnr = open_buffer({
+      "> This document is a reference inventory, not a roadmap. Not every feature",
+      "> listed here will be ported. ganja's charter is behavioral parity with",
+      "> opencode v1.18.22; Claude Code is a separate product, catalogued here.",
+    })
+
+    translate_open(bufnr, "ja", 3)
+
+    return ja, vim.api.nvim_buf_get_lines(hover.debug().buf, 0, -1, false)
+  end
+
+  it("wraps a CJK translation inside the window even with wrap off", function()
+    -- Reported regression: prose with no comment leaders reaches the hover in
+    -- source-shaped lines, so a Japanese reply ran past the right border, and
+    -- `wo.wrap = false` clipped it outright instead of wrapping.
+    local ja, shown = open_cjk_paragraph({
+      width = 150,
+      padding = { top = 0, bottom = 0, left = 5, right = 5 },
+      wo = { wrap = false },
+    })
+
+    local state = hover.debug()
+    assert.is_false(vim.wo[state.win].wrap)
+    assert.is_true(#shown > 1, "one paragraph should wrap onto several lines")
+    for _, line in ipairs(shown) do
+      assert.is_true(
+        vim.fn.strdisplaywidth(line) <= state.geometry.wrap_width,
+        string.format("%d > %d: %s", vim.fn.strdisplaywidth(line), state.geometry.wrap_width, line)
+      )
+    end
+    -- Wrapping only moves break points: no character of the reply is dropped.
+    assert.equals((ja:gsub("%s+", "")), (table.concat(shown, ""):gsub("%s+", "")))
+  end)
+
+  it("leaves nothing for Neovim to soft-wrap in the hover", function()
+    local _, shown = open_cjk_paragraph(nil)
+
+    local state = hover.debug()
+    assert.is_true(vim.wo[state.win].wrap)
+    assert.is_true(#shown > 1, "one paragraph should wrap onto several lines")
+    -- Screen rows equal buffer lines (default padding adds no virtual rows), so
+    -- every line already fits the text width as written.
+    assert.equals(#shown, vim.api.nvim_win_text_height(state.win, {}).all)
   end)
 
   it("AC3: closes on CursorMoved in the source buffer", function()

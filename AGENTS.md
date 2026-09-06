@@ -57,6 +57,7 @@ The Lua namespace, user commands, highlight groups, cache directory, vimdoc, and
 - Translation flow: `command → comment.strip_lines → textflow.segment → cache.get → registry.translate → cache.put → textflow.wrap / reapply leaders → buffer replace or ui popup`.
 - `textflow.segment` merges consecutive comment lines into one paragraph so soft-wrapped sentences translate as a unit; blank comment lines and list markers (`- `, `* `, `1. `) break paragraphs; non-comment lines pass through untranslated.
 - Widths are always display columns (`vim.fn.strdisplaywidth`), never `#s`. CJK characters (width >= 2) are their own wrap units.
+- The hover renders `result.translated`, one line per paragraph, hard-wrapped to `hover.text_budget` (the window's width ceiling minus `padding.left`/`padding.right`) — never `result.display_lines`, which mirrors the *source* line structure for the write-back and echo paths. Anything that can move the budget must re-render (`render_content`), because a ratio `width`/`max_width` follows `vim.o.columns`.
 - If a provider returns a different paragraph count than sent, the whole output is placed at the first paragraph slot rather than dropped. Single-source-line paragraphs are not re-wrapped.
 - Cost guard runs before the cache lookup, so an over-budget request errors even on a cache hit.
 - Provider errors must stay diagnosable: distinct messages for curl failure (`res.code ~= 0`, include stderr) and HTTP >= 400 (include body).

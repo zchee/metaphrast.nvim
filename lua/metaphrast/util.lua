@@ -25,6 +25,9 @@ function M.split_lines(lines)
 end
 
 ---Reflow translated text to match original line structure as closely as possible.
+---Always returns exactly as many lines as `original_lines` has, so a write-back
+---never grows or shrinks the range it replaces. Widths are display columns, so
+---a CJK reply fills the same columns its source did instead of a third of them.
 ---@param translated string
 ---@param original_lines string[]
 ---@return string[]
@@ -53,7 +56,7 @@ function M.reflow_lines(translated, original_lines)
   local lengths = {}
   local total = 0
   for i, l in ipairs(original_lines) do
-    lengths[i] = math.max(#l, 1)
+    lengths[i] = math.max(vim.fn.strdisplaywidth(l), 1)
     total = total + lengths[i]
   end
   local res = {}
@@ -64,7 +67,8 @@ function M.reflow_lines(translated, original_lines)
     local current = 0
     while idx <= #tokens do
       local token = tokens[idx]
-      local next_len = current == 0 and #token or current + 1 + #token
+      local token_width = vim.fn.strdisplaywidth(token)
+      local next_len = current == 0 and token_width or current + 1 + token_width
       local remaining_lines = target_count - i
       local remaining_tokens = #tokens - idx
       if remaining_lines > 0 and remaining_tokens <= remaining_lines then

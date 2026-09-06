@@ -171,3 +171,22 @@ Users who set any of these keys explicitly are unaffected.
   measured inside the buffer being written.
 - A blank rendered surplus line was written as a run of pad spaces. Blank
   lines now stay empty, so a trim-on-save formatter has nothing to report.
+- The hover no longer runs its translation past the right border. Text with no
+  comment structure (markdown prose, plain text) reached the window in
+  *source-shaped* lines — `util.reflow_lines` packs the reply into as many lines
+  as the source had, and dumps whatever is left onto the last one — so a reply
+  whose paragraphs did not line up with the source arrived as a mix of
+  half-filled lines and lines far wider than the window. Neovim's soft wrap hid
+  that only partly, and `wo.wrap = false` clipped the overshoot outright. The
+  hover now reads the translation itself, one line per paragraph, and hard-wraps
+  it to `hover.text_budget()` (the window's width ceiling minus
+  `padding.left`/`padding.right`) on `textflow.wrap`'s CJK-aware break units, so
+  every line fits whatever `wo.wrap` says. A ratio `width`/`max_width` moves the
+  budget with the screen, so `VimResized` re-wraps before it refits.
+  `result.display_lines` keeps mirroring the source structure for the write-back
+  and echo paths.
+- `util.reflow_lines` measured widths in bytes. A CJK reply counts three bytes
+  per column there, so it broke after filling roughly a third of the columns its
+  source line occupied. Widths are display columns now, as everywhere else in
+  the plugin; the line count it returns is unchanged, so a write-back still
+  never grows or shrinks the range it replaces.

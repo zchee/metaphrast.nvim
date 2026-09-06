@@ -119,6 +119,17 @@ describe("util.reflow_lines", function()
     assert.is_table(result)
   end)
 
+  it("measures target widths in display columns, not bytes", function()
+    -- A CJK token counts three bytes per column, so byte widths filled barely a
+    -- third of the source line before breaking.
+    local ja =
+      "これは日本語です。 折り返し幅は 表示桁で 測る必要があります。 バイト数では 三分の一しか 埋まりません。"
+    local out = util.reflow_lines(ja, { string.rep("a", 70), string.rep("b", 70) })
+
+    assert.equals(2, #out)
+    assert.is_true(vim.fn.strdisplaywidth(out[1]) > 40, out[1])
+  end)
+
   it("handles single token onto multiple lines", function()
     local result = util.reflow_lines("word", { "aa", "bb", "cc" })
     assert.equals(3, #result)

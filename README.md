@@ -217,9 +217,17 @@ screen.
 
 `padding.left` is rendered through `wo.statuscolumn` and `padding.top`/`bottom`
 through virtual lines, so none of it ends up in the buffer text. `padding.right`
-is slack inside the window width and therefore only pads lines that are not
-wrapped: Neovim wraps at `width - textoff`, so a wrapped line still reaches the
-right border.
+is slack inside the window width, and the translation is wrapped to fit it (see
+below). The original text pane (`o`) is source text and is left to Neovim's own
+soft wrap, which reaches the right border.
+
+The translation is hard-wrapped before it is written, to
+`width - padding.left - padding.right` display columns — where `width` is your
+`ui.win.width`, else the `max_width` cap, in both cases bounded by the screen.
+Wide (CJK) characters break on character boundaries and Latin words on
+whitespace, so a line never runs past the border and `wo.wrap = false` has
+nothing to clip. A ratio `width`/`max_width` follows the screen, so the text is
+re-wrapped when the editor is resized.
 
 `row` and `col` are offsets from the anchor line. When the hover opens above the
 range they are mirrored, so `row = 1` keeps one row of distance on whichever side
@@ -247,6 +255,7 @@ The result window follows the `vim.lsp.buf.hover` model:
 - Cursor movement in the source buffer closes it, as does entering insert mode or leaving the buffer.
 - Invoking it again while it is open **focuses** it and enables the keymaps below. Three entry points do this: `require("metaphrast").hover()`, `<Plug>(MetaphrastHover)`, and `:MetaphrastTranslate` without a range.
 - A focused hover closes on `q`, `<Esc>`, `r`, or when it loses focus.
+- The translation is wrapped to the window's text width in display columns, so it fits whether or not `wo.wrap` is set. Line breaks in the hover therefore need not match the ones written back by `r`, which follow the source structure instead.
 
 No keymap is bound by default. Map `<Plug>(MetaphrastHover)` yourself:
 

@@ -1,5 +1,7 @@
 local comment = require("metaphrast.comment")
+local textflow = require("metaphrast.textflow")
 local theme = require("metaphrast.ui.theme")
+local util = require("metaphrast.util")
 
 local M = {}
 
@@ -184,16 +186,82 @@ function M.border_size(border)
   }
 end
 
+---The widest text the hover can show without soft-wrapping or clipping.
+---Mirrors the width ceiling `compute_geometry` applies: the configured width,
+---else the auto-width cap, both bounded by the screen, minus the horizontal
+---padding. Wrapping the text to this budget keeps every line inside the
+---window whatever `wo.wrap` is set to.
+---@param cfg MetaphrastWinConfig `ui.win` config.
+---@param columns integer `vim.o.columns`.
+---@param border_cols integer|nil Columns the border occupies.
+---@return integer budget Never below 1.
+function M.text_budget(cfg, columns, border_cols)
+  local padding = cfg.padding or {}
+  local cap
+  if cfg.width then
+    cap = resolve_size(cfg.width, columns)
+  elseif cfg.max_width then
+    cap = resolve_size(cfg.max_width, columns)
+  else
+    cap = columns
+  end
+  cap = math.min(cap, columns - (border_cols or 0))
+  return math.max(1, cap - (padding.left or 0) - (padding.right or 0))
+end
+
+---Hard-wrap display lines to `budget` display columns.
+---Lines that already fit are kept byte for byte; an over-wide line breaks on
+---`textflow.wrap`'s CJK-aware units, and its leading indent is repeated on
+---every continuation so a list item stays aligned under its marker.
+---@param lines string[]
+---@param budget integer|nil Columns available to text; nil or below 1 wraps nothing.
+---@return string[] wrapped
+function M.wrap_display(lines, budget)
+  if type(budget) ~= "number" or budget < 1 then
+    return lines
+  end
+  local out = {}
+  for _, line in ipairs(lines) do
+    if vim.fn.strdisplaywidth(line) <= budget then
+      out[#out + 1] = line
+    else
+      local indent = line:match("^%s*") or ""
+      local room = math.max(1, budget - vim.fn.strdisplaywidth(indent))
+      for _, piece in ipairs(textflow.wrap(line, room)) do
+        out[#out + 1] = indent .. piece
+      end
+    end
+  end
+  return out
+end
+
+---The prose the hover shows, one line per translated paragraph.
+---`result.display_lines` mirrors the *source* line structure for the write-back
+---and echo paths, so a reply whose paragraphs do not line up with the source
+---arrives there as half-filled lines. The hover reads the translation itself
+---and wraps it to the window instead.
+---@param result MetaphrastHoverResult
+---@return string[] lines
+local function translated_lines(result)
+  local translated = result.translated
+  if type(translated) ~= "string" then
+    return result.display_lines or {}
+  end
+  return util.split_lines((translated:gsub("\n+$", "")))
+end
+
 ---Build the hover buffer text and the extmarks that dress it.
----The buffer text is exactly `result.display_lines`, preceded by the
----leader-stripped source lines when `original_visible`. Padding and the
+---The buffer text is the translation wrapped to `budget`, preceded by the
+---leader-stripped source lines when `original_visible` (those stay verbatim:
+---they are source text, and Neovim already soft-wraps them). Padding and the
 ---対訳 separator are virtual lines, so they never enter the text.
 ---@param result MetaphrastHoverResult
 ---@param source MetaphrastHoverSource|nil
 ---@param original_visible boolean
 ---@param padding MetaphrastWinPadding|nil Only `top`/`bottom` are used here.
+---@param budget integer|nil Columns to wrap the translation to; nil leaves it unwrapped.
 ---@return MetaphrastHoverContent content
-function M.build_lines(result, source, original_visible, padding)
+function M.build_lines(result, source, original_visible, padding, budget)
   padding = padding or {}
   local top = padding.top or 0
   local bottom = padding.bottom or 0
@@ -203,7 +271,7 @@ function M.build_lines(result, source, original_visible, padding)
   end
   local lines = {}
   vim.list_extend(lines, original)
-  vim.list_extend(lines, result.display_lines or {})
+  vim.list_extend(lines, M.wrap_display(translated_lines(result), budget))
   if #lines == 0 then
     lines = { "" }
   end
@@ -623,8 +691,16 @@ local function schedule_measure(delay)
   end, delay)
 end
 
+---Build the current instance's content, wrapped to the live screen width.
+---@return MetaphrastHoverContent content
+local function build_content()
+  local cfg = instance.cfg
+  local budget = M.text_budget(cfg.win, vim.o.columns, M.border_size(instance.border).cols)
+  return M.build_lines(instance.result, instance.source, instance.original_visible, cfg.win.padding, budget)
+end
+
 local function render_content()
-  local content = M.build_lines(instance.result, instance.source, instance.original_visible, instance.cfg.win.padding)
+  local content = build_content()
   instance.content = content
   local buf = instance.buf
   if not (buf and vim.api.nvim_buf_is_valid(buf)) then
@@ -698,6 +774,9 @@ local function register_hover_autocmds()
     group = group,
     desc = "metaphrast: refit the hover to the new screen",
     callback = function()
+      -- A ratio `width`/`max_width` moved with the screen, so the text budget
+      -- moved too: re-wrap before refitting or the lines outgrow the window.
+      render_content()
       if update_geometry({}) then
         schedule_measure(0)
       end
@@ -810,7 +889,7 @@ function M.show(source, result, opts)
   instance.original_visible = cfg.hover.show_original == true
   instance.frozen_below = nil
   instance.last_error = nil
-  instance.content = M.build_lines(result, source, instance.original_visible, cfg.win.padding)
+  instance.content = build_content()
 
   local geometry = compute()
   if not geometry then
