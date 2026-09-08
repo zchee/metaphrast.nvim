@@ -403,16 +403,15 @@ describe("hover.build_lines", function()
     assert.equals(long, table.concat(content.lines, "", 4))
   end)
 
-  it("reads the translation, not the source-shaped display lines", function()
-    local content = hover.build_lines({ translated = "alpha beta", display_lines = { "alpha", "beta" } }, nil, false)
+  it("keeps a blank display line as the paragraph break it stands for", function()
+    local long = string.rep("あ", 15)
+    local content =
+      hover.build_lines({ translated = long .. "\n" .. long, display_lines = { long, "", long } }, nil, false, nil, 20)
 
-    assert.same({ "alpha beta" }, content.lines)
-  end)
-
-  it("drops a trailing newline a provider appended", function()
-    local content = hover.build_lines({ translated = "one\ntwo\n", display_lines = {} }, nil, false)
-
-    assert.same({ "one", "two" }, content.lines)
+    assert.same(
+      { string.rep("あ", 10), string.rep("あ", 5), "", string.rep("あ", 10), string.rep("あ", 5) },
+      content.lines
+    )
   end)
 
   it("falls back to one empty line for an empty result", function()
@@ -943,6 +942,18 @@ describe("hover integration", function()
     end
     -- Wrapping only moves break points: no character of the reply is dropped.
     assert.equals((ja:gsub("%s+", "")), (table.concat(shown, ""):gsub("%s+", "")))
+  end)
+
+  it("keeps the source's blank comment lines between paragraphs", function()
+    -- Reported regression: a `//` line separating two comment paragraphs
+    -- vanished from the hover, so paragraphs ran into each other.
+    local bufnr = open_buffer({ "// alpha one", "//", "// beta two" }, "// %s")
+
+    translate_open(bufnr, "es", 3)
+
+    local state = hover.debug()
+    assert.same({ "alpha one", "", "beta two [echo]->es" }, state.result.display_lines)
+    assert.same({ "alpha one", "", "beta two [echo]->es" }, vim.api.nvim_buf_get_lines(state.buf, 0, -1, false))
   end)
 
   it("leaves nothing for Neovim to soft-wrap in the hover", function()

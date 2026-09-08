@@ -92,8 +92,16 @@ end)
 
 describe("textflow.is_no_line_start", function()
   it("matches closing punctuation and brackets", function()
-    for _, ch in ipairs({ "。", "、", "）", "」", "！", "：", ")", "." }) do
+    for _, ch in ipairs({ "。", "、", "）", "」", "！", "：", "”" }) do
       assert.is_true(textflow.is_no_line_start(ch), ch)
+    end
+  end)
+
+  it("lets a path or an identifier open a line", function()
+    -- ASCII punctuation binds to the word before it without a space, so a unit
+    -- that starts with it is a name, not punctuation.
+    for _, unit in ipairs({ ".gitignore", ".tool_input.file_path", ")", "," }) do
+      assert.is_false(textflow.is_no_line_start(unit), unit)
     end
   end)
 
@@ -168,9 +176,16 @@ describe("textflow.wrap", function()
   end)
 
   it("keeps the fill when what would move cannot fit on one line", function()
-    -- "the .gitignore" needs 14 columns, so the next line would break inside
+    -- "abcdefg。」」" needs 13 columns, so the next line would break inside
     -- the run and open with it anyway: the greedy break stays.
-    assert.same({ "see the", ".gitignore" }, textflow.wrap("see the .gitignore", 12))
+    assert.same({ "a b abcdefg", "。」」" }, textflow.wrap("a b abcdefg。」」", 12))
+  end)
+
+  it("does not pull a word back for a path that follows it", function()
+    assert.same(
+      { "Reads the hook JSON on stdin, pulls", ".tool_input.file_path out of it" },
+      textflow.wrap("Reads the hook JSON on stdin, pulls .tool_input.file_path out of it", 36)
+    )
   end)
 
   it("honors the line-head rule without exceeding the width", function()

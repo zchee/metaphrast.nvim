@@ -1,7 +1,6 @@
 local comment = require("metaphrast.comment")
 local textflow = require("metaphrast.textflow")
 local theme = require("metaphrast.ui.theme")
-local util = require("metaphrast.util")
 
 local M = {}
 
@@ -19,7 +18,7 @@ local M = {}
 
 ---@class MetaphrastHoverResult
 ---@field translated string The translation as returned by the pipeline.
----@field display_lines string[] Layout-rendered, leader-free lines shown in the hover.
+---@field display_lines string[] The translation laid out like the source: one entry per paragraph, blank source lines as "", non-comment lines verbatim. Unwrapped; the hover wraps each to its width.
 ---@field meta table|nil Provider metadata (`provider`, `cached`, `icon`).
 ---@field opts table|nil Language context (`source_lang`, `target_lang`, `provider`).
 
@@ -235,26 +234,12 @@ function M.wrap_display(lines, budget)
   return out
 end
 
----The prose the hover shows, one line per translated paragraph.
----`result.display_lines` mirrors the *source* line structure for the write-back
----and echo paths, so a reply whose paragraphs do not line up with the source
----arrives there as half-filled lines. The hover reads the translation itself
----and wraps it to the window instead.
----@param result MetaphrastHoverResult
----@return string[] lines
-local function translated_lines(result)
-  local translated = result.translated
-  if type(translated) ~= "string" then
-    return result.display_lines or {}
-  end
-  return util.split_lines((translated:gsub("\n+$", "")))
-end
-
 ---Build the hover buffer text and the extmarks that dress it.
----The buffer text is the translation wrapped to `budget`, preceded by the
----leader-stripped source lines when `original_visible` (those stay verbatim:
----they are source text, and Neovim already soft-wraps them). Padding and the
----対訳 separator are virtual lines, so they never enter the text.
+---The buffer text is `result.display_lines` with each entry wrapped to
+---`budget`, preceded by the leader-stripped source lines when
+---`original_visible` (those stay verbatim: they are source text, and Neovim
+---already soft-wraps them). Padding and the 対訳 separator are virtual lines,
+---so they never enter the text.
 ---@param result MetaphrastHoverResult
 ---@param source MetaphrastHoverSource|nil
 ---@param original_visible boolean
@@ -271,7 +256,7 @@ function M.build_lines(result, source, original_visible, padding, budget)
   end
   local lines = {}
   vim.list_extend(lines, original)
-  vim.list_extend(lines, M.wrap_display(translated_lines(result), budget))
+  vim.list_extend(lines, M.wrap_display(result.display_lines or {}, budget))
   if #lines == 0 then
     lines = { "" }
   end

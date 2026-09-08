@@ -129,8 +129,11 @@ Users who set any of these keys explicitly are unaffected.
   stay behind (the run reaches the line's first unit), and what would move does
   not fit on one line, where shortening the line would buy nothing. The
   strict-mode-only characters (`ー`, small kana, iteration marks) stay
-  breakable, matching CSS `line-break: normal`. `textflow.is_no_line_start()`
-  exposes the predicate.
+  breakable, matching CSS `line-break: normal`, and so does ASCII punctuation:
+  it binds to the word before it without a space, so a break unit that starts
+  with `.` or `)` is a path or an identifier (`.gitignore`,
+  `.tool_input.file_path`), which the rule must not pull a word back for.
+  `textflow.is_no_line_start()` exposes the predicate.
 
 ### Removed
 
@@ -199,6 +202,13 @@ Users who set any of these keys explicitly are unaffected.
   budget with the screen, so `VimResized` re-wraps before it refits.
   `result.display_lines` keeps mirroring the source structure for the write-back
   and echo paths.
+- The hover dropped the blank comment lines between paragraphs, so a `//`
+  block with three paragraphs read as one. The translation is now laid out
+  like its source for the hover — one block per paragraph, blank comment
+  lines and non-comment lines kept in place — through the same paragraph
+  mapping the write-back uses (`lay_out`), so the two cannot disagree on where
+  a paragraph lands; a reply with the wrong paragraph count goes to the first
+  slot in both. The echoed/returned text is unchanged.
 - `util.reflow_lines` measured widths in bytes. A CJK reply counts three bytes
   per column there, so it broke after filling roughly a third of the columns its
   source line occupied. Widths are display columns now, as everywhere else in

@@ -29,16 +29,15 @@ end
 -- prohibits at a line start. The strict-mode extras are deliberately absent —
 -- small kana (っゃゅょ…), the prolonged sound mark ー and the iteration marks
 -- (々ゝヽ) are breakable under `line-break: normal`, and forcing them onto the
--- previous line only buys shorter lines.
+-- previous line only buys shorter lines. ASCII punctuation is absent too: it
+-- binds to the word before it without a space, so it never opens a break
+-- unit as punctuation — a unit that does start with `.` or `)` is a path or
+-- an identifier (`.gitignore`, `.tool_input.file_path`), which may open a
+-- line like any other word.
+local NO_LINE_START_CHARS =
+  "、。，．・：；？！‼⁇⁈⁉゛゜）］｝〕〉》」』】〗〙〟｠｣”’"
 local NO_LINE_START = {}
-for _, ch in
-  ipairs(
-    vim.fn.split(
-      "、。，．・：；？！‼⁇⁈⁉゛゜)]}）］｝〕〉》」』】〗〙〟｠｣”’,.:;?!",
-      "\\zs"
-    )
-  )
-do
+for _, ch in ipairs(vim.fn.split(NO_LINE_START_CHARS, "\\zs")) do
   NO_LINE_START[ch] = true
 end
 

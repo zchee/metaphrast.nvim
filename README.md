@@ -264,7 +264,7 @@ The result window follows the `vim.lsp.buf.hover` model:
 - Cursor movement in the source buffer closes it, as does entering insert mode or leaving the buffer.
 - Invoking it again while it is open **focuses** it and enables the keymaps below. Three entry points do this: `require("metaphrast").hover()`, `<Plug>(MetaphrastHover)`, and `:MetaphrastTranslate` without a range.
 - A focused hover closes on `q`, `<Esc>`, `r`, or when it loses focus.
-- The translation is wrapped to the window's text width in display columns, so it fits whether or not `wo.wrap` is set. Line breaks in the hover therefore need not match the ones written back by `r`, which follow the source structure instead.
+- The translation is laid out like its source: one block per comment paragraph, with the blank comment lines and any non-comment lines between them kept in place, and each block wrapped to the window's text width in display columns, so it fits whether or not `wo.wrap` is set. Line breaks inside a block therefore need not match the ones written back by `r`, which wraps to the source's own width instead.
 
 No keymap is bound by default. Map `<Plug>(MetaphrastHover)` yourself:
 

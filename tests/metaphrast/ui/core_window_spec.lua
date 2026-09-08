@@ -64,6 +64,65 @@ describe("core hover presentation", function()
     assert.is_true(hover.is_open_for(bufnr))
   end)
 
+  it("lays the hover lines out like the source, blank lines and code included", function()
+    registry.register("two_paras", {
+      translate = function()
+        return "A\nB"
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metaphrast.config.provider = "two_paras"
+    metaphrast.config.replace = false
+    local bufnr = open_buffer({ "// a", "//", "x := 1", "// b" }, "// %s")
+
+    metaphrast.translate_range(bufnr, 0, 4, { target_lang = "ja", show_window = true })
+
+    -- One entry per paragraph, the blank comment line as "", the code line
+    -- verbatim: the write-back and the hover agree on where each lands.
+    assert.same({ "A", "", "x := 1", "B" }, hover.debug().result.display_lines)
+  end)
+
+  it("puts a reply with the wrong paragraph count at the first slot, dropping nothing", function()
+    registry.register("one_para", {
+      translate = function()
+        return "ONE"
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metaphrast.config.provider = "one_para"
+    metaphrast.config.replace = false
+    local bufnr = open_buffer({ "// a", "//", "x := 1", "// b" }, "// %s")
+
+    metaphrast.translate_range(bufnr, 0, 4, { target_lang = "ja", show_window = true })
+
+    assert.same({ "ONE", "", "x := 1" }, hover.debug().result.display_lines)
+  end)
+
+  it("shows a reply's own paragraphs when the source has no comment structure", function()
+    registry.register("reparagraphed", {
+      translate = function()
+        return "uno dos\ntres\n"
+      end,
+      estimate_cost = function()
+        return 0
+      end,
+    })
+    metaphrast.config.provider = "reparagraphed"
+    metaphrast.config.replace = false
+    local bufnr = open_buffer({ "one", "two", "three" })
+
+    local out = metaphrast.translate_range(bufnr, 0, 3, { target_lang = "es", show_window = true })
+
+    -- The hover gets the reply's paragraphs (trailing newline dropped); the
+    -- return value keeps mirroring the source's three lines.
+    assert.same({ "uno dos", "tres" }, hover.debug().result.display_lines)
+    assert.equals(3, #vim.split(out, "\n", { plain = true }))
+  end)
+
   it("shows the hover instead of replacing when replace is false", function()
     local bufnr = open_buffer({ "Hello world" })
     set_visual_marks(bufnr, 1, 0, 1, 10)

@@ -278,73 +278,95 @@ local function build_comment_input(stripped, info, parts)
   return table.concat(paragraphs, "\n"), { segments = segments, para_count = para_count }
 end
 
----Lay a coherent translation back into commented buffer lines.
----
----Each translated paragraph is re-wrapped to its source column budget (single-
----source-line paragraphs are kept on one line), raw passthrough lines are
----preserved, and comment leaders are reapplied per output line. On a paragraph
----count mismatch (a provider that reformatted the newlines) every reply
----paragraph is wrapped in turn at the first paragraph slot, so output is never
----silently dropped and no line reaches the buffer without its leader.
+---Split a reply into its paragraphs, dropping the trailing newline a provider
+---may append so the paragraph count still matches what was sent.
 ---@param translated string
----@param layout table
----@param parts MetaphrastCommentParts
----@return string[]
-local function assemble_comment_lines(translated, layout, parts)
-  -- Drop any spurious trailing newline a provider appended so the paragraph
-  -- count still matches and well-behaved multi-paragraph mapping is preserved.
-  local translated_paras = util.split_lines((translated:gsub("\n+$", "")))
-  local content_lines = {}
-  local out_info = {}
+---@return string[] paragraphs
+local function reply_paragraphs(translated)
+  return util.split_lines((translated:gsub("\n+$", "")))
+end
 
-  if #translated_paras ~= layout.para_count then
-    -- A provider reformatted the paragraph newlines so we can no longer map
-    -- each paragraph back. Preserve raw passthrough lines in place and emit the
-    -- whole translation at the first paragraph slot, so no content (translation
-    -- or surrounding code) is ever silently dropped. Wrap the reply one
-    -- paragraph at a time rather than in one block: `textflow.wrap` treats a
-    -- newline as an ordinary break unit and hands it back inside a line, and
-    -- `try_apply` only discovers it after `comment.reapply` has run, so a
-    -- single-block wrap writes the split-off lines with no leader at all.
+---@class MetaphrastLayoutRow
+---@field text string One output line, leader-free.
+---@field seg MetaphrastFlowSegment The segment the line belongs to.
+
+---Lay the reply's paragraphs over the layout: raw passthrough lines (blank
+---comment lines, code between comment blocks) stay in place, and each
+---paragraph slot receives its translated paragraph through `render`, which
+---turns one paragraph into the lines it occupies. `exact` tells `render`
+---whether the paragraph maps one-to-one onto its slot.
+---
+---On a paragraph count mismatch (a provider that reformatted the newlines)
+---every reply paragraph is rendered in turn at the first paragraph slot and
+---the other slots stay empty, so no content — translation or surrounding
+---code — is ever silently dropped. The mapping lives here alone so the
+---write-back and the hover cannot disagree on where a paragraph lands.
+---@param translated string
+---@param layout table `segments` and `para_count` from `build_comment_input`.
+---@param render fun(text: string, seg: MetaphrastFlowSegment, exact: boolean): string[]
+---@return MetaphrastLayoutRow[] rows
+local function lay_out(translated, layout, render)
+  local paras = reply_paragraphs(translated)
+  local rows = {}
+  local function emit(lines, seg)
+    for _, line in ipairs(lines) do
+      rows[#rows + 1] = { text = line, seg = seg }
+    end
+  end
+
+  if #paras ~= layout.para_count then
     local emitted = false
     for _, seg in ipairs(layout.segments) do
       if seg.kind == "raw" then
-        content_lines[#content_lines + 1] = seg.content
-        out_info[#out_info + 1] = { indent = seg.indent, has_comment = seg.has_comment }
+        emit({ seg.content }, seg)
       elseif not emitted then
         emitted = true
-        for _, para in ipairs(translated_paras) do
-          for _, line in ipairs(textflow.wrap(para, seg.width)) do
-            content_lines[#content_lines + 1] = line
-            out_info[#out_info + 1] = { indent = seg.indent, has_comment = true }
-          end
+        for _, para in ipairs(paras) do
+          emit(render(para, seg, false), seg)
         end
       end
     end
-    return comment.reapply(content_lines, out_info, parts)
+    return rows
   end
 
   local idx = 0
   for _, seg in ipairs(layout.segments) do
     if seg.kind == "raw" then
-      content_lines[#content_lines + 1] = seg.content
-      out_info[#out_info + 1] = { indent = seg.indent, has_comment = seg.has_comment }
+      emit({ seg.content }, seg)
     else
       idx = idx + 1
-      local para_text = translated_paras[idx] or ""
-      local wrapped
-      if (seg.source_count or 1) <= 1 then
-        wrapped = { para_text }
-      else
-        wrapped = textflow.wrap(para_text, seg.width)
-      end
-      for _, line in ipairs(wrapped) do
-        content_lines[#content_lines + 1] = line
-        out_info[#out_info + 1] = { indent = seg.indent, has_comment = true }
-      end
+      emit(render(paras[idx] or "", seg, true), seg)
     end
   end
+  return rows
+end
 
+---Lay a coherent translation back into commented buffer lines.
+---
+---Each translated paragraph is re-wrapped to its source column budget (single-
+---source-line paragraphs are kept on one line), raw passthrough lines are
+---preserved, and comment leaders are reapplied per output line. Paragraphs
+---are wrapped one at a time rather than the reply as one block: `textflow.wrap`
+---treats a newline as an ordinary break unit and hands it back inside a line,
+---and `try_apply` only discovers it after `comment.reapply` has run, so a
+---single-block wrap would write the split-off lines with no leader at all.
+---@param translated string
+---@param layout table
+---@param parts MetaphrastCommentParts
+---@return string[]
+local function assemble_comment_lines(translated, layout, parts)
+  local rows = lay_out(translated, layout, function(text, seg, exact)
+    if exact and (seg.source_count or 1) <= 1 then
+      return { text }
+    end
+    return textflow.wrap(text, seg.width)
+  end)
+  local content_lines = {}
+  local out_info = {}
+  for i, row in ipairs(rows) do
+    content_lines[i] = row.text
+    out_info[i] = { indent = row.seg.indent, has_comment = row.seg.has_comment }
+  end
   return comment.reapply(content_lines, out_info, parts)
 end
 
@@ -386,6 +408,41 @@ local function render_replacement(analysis, translated)
   return out_lines
 end
 
+---The translation laid out like its source, for the hover: one entry per
+---translated paragraph, blank comment lines as empty strings and non-comment
+---lines verbatim, so the paragraph breaks the source had survive the trip.
+---Without comment structure the reply's own paragraphs are the layout. The
+---hover wraps each entry to its own width; nothing here is wrapped.
+---@param analysis table Output of `analyze_lines`.
+---@param translated string
+---@return string[] lines
+local function display_lines(analysis, translated)
+  if not analysis.layout then
+    return reply_paragraphs(translated)
+  end
+  local rows = lay_out(translated, analysis.layout, function(text)
+    return { text }
+  end)
+  local lines = {}
+  for i, row in ipairs(rows) do
+    lines[i] = row.text
+  end
+  return lines
+end
+
+---The leader-free text echoed or returned when no window opens: the reply as
+---sent for comment structure, else reflowed to the source's line count so a
+---range write-back and its return value describe the same lines.
+---@param analysis table Output of `analyze_lines`.
+---@param translated string
+---@return string[] lines
+local function echo_lines(analysis, translated)
+  if analysis.layout then
+    return util.split_lines(translated)
+  end
+  return util.reflow_lines(translated, analysis.stripped)
+end
+
 ---Build the hover payload for a translation.
 ---@param translated string
 ---@param meta table|nil
@@ -393,15 +450,9 @@ end
 ---@param opts table|nil Translation options (`source_lang`, `target_lang`).
 ---@return MetaphrastHoverResult result
 local function build_result(translated, meta, analysis, opts)
-  local display_lines
-  if analysis.layout then
-    display_lines = util.split_lines(translated)
-  else
-    display_lines = util.reflow_lines(translated, analysis.stripped)
-  end
   return {
     translated = translated,
-    display_lines = display_lines,
+    display_lines = display_lines(analysis, translated),
     meta = meta,
     opts = {
       source_lang = opts and opts.source_lang or M.config.source_lang,
@@ -861,7 +912,7 @@ local function deliver(source, translated, meta, analysis, opts)
     should_replace = M.config.replace
   end
   local result = build_result(translated, meta, analysis, opts)
-  local rendered = table.concat(result.display_lines, "\n")
+  local rendered = table.concat(echo_lines(analysis, translated), "\n")
   if should_replace then
     local applied, reason = try_apply(source, translated)
     if applied == false and not (opts and opts.quiet) then
